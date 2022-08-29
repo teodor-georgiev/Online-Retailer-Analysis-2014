@@ -66,7 +66,7 @@ class Model_class(object):
         df_valid.drop(columns_to_drop, axis=1, inplace=True)
         return df_train, df_test, df_valid
     
-    def LOE_Encoder(self, df_train:dict, df_test:dict, columns:list ,sig:float)->tuple:
+    def LOE_Encoder(self, df_train:dict, df_test:dict, columns:list ,sig:float,drop:bool)->tuple:
         """
         Leave One Out Encoder to calculate the response variable for each category.
 
@@ -89,12 +89,19 @@ class Model_class(object):
             Dataframe with testing data with encoded columns.
         encoder : object
             Encoder object.
-        """                      
+        """
+        renamed_columns = [x + "_LOE_encoded" for x in columns]                     
         encoder = LeaveOneOutEncoder(cols=columns, return_df=True,sigma=sig)
         df_encode_train = encoder.fit_transform(df_train.drop(["return"],axis=1),df_train[["return"]]).round(3)
         df_encode_test = encoder.transform(df_test.drop(["return"],axis=1)).round(3)
         df_encode_train , df_encode_test = df_encode_train.join(df_train[["return"]]), df_encode_test.join(df_test[["return"]])
-        return df_encode_train, df_encode_test, encoder
+        df_encode_train.rename(columns=dict(zip(df_encode_train[columns], renamed_columns)),inplace=True)
+        df_encode_test.rename(columns=dict(zip(df_encode_test[columns], renamed_columns)),inplace=True)
+        if drop:
+            return df_encode_train, df_encode_test, encoder
+        else:
+            df_encode_train , df_encode_test = df_encode_train.join(df_train[columns]), df_encode_test.join(df_test[columns])
+            return df_encode_train, df_encode_test, encoder
     
     def WOE_Encoder(self,df_train,df_test,columns,sig):
         encoder = WOEEncoder(cols=columns, return_df=True,sigma=sig, verbose=True,regularization=1)
@@ -158,7 +165,7 @@ class Model_class(object):
         model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
         results = model.fit(X_train, Y_train, epochs=epochs, batch_size=batch_size,verbose=verbose,validation_data=(X_test, Y_test))
         Y_pred = model.predict(X_test).round(4)
-        mae = mean_absolute_error(Y_test, Y_pred)
+        mae = mean_absolute_error(Y_test, Y_pred).round(4)
         return model, Y_pred, mae, results.history["mae"], results.history['val_'+"mae"]
     
     def xgboost(self, df_train:dict, df_test:dict, params:dict, verbose:int)->tuple:
@@ -192,7 +199,7 @@ class Model_class(object):
         model.fit(X_train, Y_train, eval_metric='mae', eval_set=[(X_test, Y_test)],early_stopping_rounds = 20,verbose = verbose)
         Y_pred = model.predict(X_test)
         Y_pred_proba = model.predict_proba(X_test)[:,1].round(4)
-        mae = mean_absolute_error(Y_test, Y_pred)
+        mae = mean_absolute_error(Y_test, Y_pred).round(4)
         return model, Y_pred, mae, Y_pred_proba
     
     def catboost(self, df_train:dict, df_test:dict, params:dict, verbose:bool,cat_columns)->tuple:
@@ -230,7 +237,7 @@ class Model_class(object):
         model.fit(pool_train, eval_set=(pool_test), use_best_model=True, verbose=verbose,early_stopping_rounds = 40)
         Y_pred = model.predict(pool_test)
         Y_pred_proba = model.predict_proba(pool_test)[:,1].round(4)
-        mae = mean_absolute_error(Y_test, Y_pred)
+        mae = mean_absolute_error(Y_test, Y_pred).round(4)
         return model, Y_pred, mae, Y_pred_proba
     
     def lightgmb(self, df_train:dict, df_test:dict, params:dict, verbose:int, cat_columns:list)->tuple:
@@ -272,7 +279,7 @@ class Model_class(object):
         model.fit(X_train, Y_train, verbose=verbose)
         Y_pred_proba = model.predict_proba(X_test)[:,1].round(4)
         Y_pred = model.predict(X_test)
-        mae = mean_absolute_error(Y_test, Y_pred)
+        mae = mean_absolute_error(Y_test, Y_pred).round(4)
         return model, Y_pred, mae, Y_pred_proba
     
     def combine_models(self, prob_dict, df_test:dict)->tuple:
@@ -304,7 +311,7 @@ class Model_class(object):
                     error = mean_absolute_error(df_test["return"], sum.round())
                     if error < best_error:
                         best_error = error
-                        best_i = i
+                        # best_i = i
                         best_model1 = prob_list[j] + "_" + str(i/100)
                         best_model2 = prob_list[k] + "_" + str((100-i)/100)
                         best_combination = best_model1 + "/" + best_model2
