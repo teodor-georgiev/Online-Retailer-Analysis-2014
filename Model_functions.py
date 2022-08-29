@@ -156,10 +156,10 @@ class Model_class(object):
             model.add(Dropout(dropout[i]))
         model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
-        model.fit(X_train, Y_train, epochs=epochs, batch_size=batch_size,verbose=verbose,validation_data=(X_test, Y_test))
+        results = model.fit(X_train, Y_train, epochs=epochs, batch_size=batch_size,verbose=verbose,validation_data=(X_test, Y_test))
         Y_pred = model.predict(X_test).round(4)
         mae = mean_absolute_error(Y_test, Y_pred)
-        return model, Y_pred, mae,
+        return model, Y_pred, mae, results.history["mae"], results.history['val_'+"mae"]
     
     def xgboost(self, df_train:dict, df_test:dict, params:dict, verbose:int)->tuple:
         """ 
@@ -207,6 +207,8 @@ class Model_class(object):
             Dataframe with testing data.
         params : dict
             Dictionary with the parameters for the CatBoost model.
+        cat_columns : list
+            List of columns with categorical data.
         verbose : int
             Whether to print the progress of the CatBoost model.
 
@@ -225,13 +227,13 @@ class Model_class(object):
         model = CatBoostClassifier(**params)
         pool_train = Pool(X_train, Y_train,cat_features = cat_columns)
         pool_test = Pool(X_test, Y_test,cat_features = cat_columns)
-        model.fit(pool_train, eval_set=(pool_test), use_best_model=True, verbose=verbose,early_stopping_rounds = 20)
+        model.fit(pool_train, eval_set=(pool_test), use_best_model=True, verbose=verbose,early_stopping_rounds = 40)
         Y_pred = model.predict(pool_test)
         Y_pred_proba = model.predict_proba(pool_test)[:,1].round(4)
         mae = mean_absolute_error(Y_test, Y_pred)
         return model, Y_pred, mae, Y_pred_proba
     
-    def lightgmb(self, df_train:dict, df_test:dict, params:dict, verbose:int)->tuple:
+    def lightgmb(self, df_train:dict, df_test:dict, params:dict, verbose:int, cat_columns:list)->tuple:
         """ 
         LightGBM model to predict whether an item will be returned or not.
 
@@ -259,7 +261,13 @@ class Model_class(object):
         Y_pred_proba: list
             List of floats with the probabilities of the LightGBM model
         """
-        X_train, Y_train, X_test, Y_test = self.XY_split(df_train, df_test)
+        # df_cat_int = self.df.copy()
+        df_train_copy = df_train.copy()
+        df_test_copy = df_test.copy()
+        for i in cat_columns:
+            df_train_copy[i] = df_train_copy[i].astype('category')
+            df_test_copy[i] = df_test_copy[i].astype('category')
+        X_train, Y_train, X_test, Y_test = self.XY_split(df_train_copy, df_test_copy)
         model = LGBMClassifier(**params)
         model.fit(X_train, Y_train, verbose=verbose)
         Y_pred_proba = model.predict_proba(X_test)[:,1].round(4)
@@ -267,7 +275,7 @@ class Model_class(object):
         mae = mean_absolute_error(Y_test, Y_pred)
         return model, Y_pred, mae, Y_pred_proba
     
-    def combine_models(self, prob_dict,df_test:dict)->tuple:
+    def combine_models(self, prob_dict, df_test:dict)->tuple:
         """ 
         Combines the predictions of the models to get the final prediction.
 
