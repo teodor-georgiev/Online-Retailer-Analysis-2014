@@ -346,7 +346,7 @@ class Model_class(object):
         return X_train, Y_train, X_test, Y_test
     
     
-    def get_feature_importance(model:object,df:dict)->list:
+    def get_feature_importance(self,model:object,df:dict)->list:
         """
         Get feature importance from the tree-based models.
 
@@ -355,7 +355,7 @@ class Model_class(object):
         model : object
             Tree model from sklearn.
         df  : dict
-            Tree model from sklearn
+            Dataframe with the features.
 
         Returns
         -------
