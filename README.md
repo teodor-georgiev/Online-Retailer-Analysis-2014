@@ -25,7 +25,7 @@ The dataset has the following features:
     - `return`: Label of the item. 0 if the item is not returned, and 1 if the item is returned.
 
 ## Feature Engineering
-Overall we managed to generate over 450 features using the base features. This was done both by using the base features directly, as well as by combining them with each other, or deriving new features from them, for example by using the date of birth of the user to calculate the age of the user or using the order and the delivery date to get the delivery time of the item.
+Overall we managed to generate over ``450 features`` using the base features. This was done both by using the base features directly, as well as by combining them with each other, or deriving new features from them, for example by using the date of birth of the user to calculate the age of the user or using the order and the delivery date to get the delivery time of the item.
 
 ## Modeling
 The following models were used to predict the return of an item:
@@ -37,4 +37,7 @@ The following models were used to predict the return of an item:
 Since both the neural network and the XGBboost models do not natively support categorical features, and because the categorical features in the dataset possess a high cardinality, we used [Leave-One-Out(LOE)](https://contrib.scikit-learn.org/category_encoders/leaveoneout.html) encoding to encode the categorical features. This encoding method encodes each categorical feature by replacing each category with the mean of the target variable for the category while excluding the current row’s target when calculating the mean target for a level to reduce the effect of outliers.
 
 ## Results
-After every round of feature engineering and modeling, we evaluated the performance of the models using the Mean Absolute Error (MAE) and remove models that did not perform well. Throughout several rounds of feature engineering and modeling as well as hyperparameter tuning, the best-performing model was the CatBoost model using its `GPU` implementation. This model achieved a MAE of `0.2974` on the test set. Which corresponds to 14893 Points in the Data Mining Cup 2014.
+After every round of feature engineering and modeling, we evaluated the performance of the models using the Mean Absolute Error (MAE) and removed models that did not perform well. Throughout several rounds of feature engineering and modeling as well as hyperparameter tuning, the best-performing model was the ``CatBoost`` model using its `GPU` implementation. Using the evaluation criteria defined in the Data Mining Cup 2014:
+$$ E= \sum_i^n \left\lvert returnShipment_i - prediction_i   \right\rvert$$
+
+Where, $returnShipment_i$ is the information whether order item $i$ represents a return (0 means “item kept”, 1 means “item returned”), and $prediction_i$ is the predicted return probability for the order item $i$. The model achieved an MAE of `0.2974` on the test set and therefore ``14893 Points`` in the competition, which places the solution in the ``top 4`` of the ranking list of the Data Mining Cup 2014. 
