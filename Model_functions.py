@@ -64,7 +64,7 @@ class Model_class(object):
         df_train.drop(columns_to_drop, axis=1, inplace=True)
         df_test.drop(columns_to_drop, axis=1, inplace=True)
         df_valid.drop(columns_to_drop, axis=1, inplace=True)
-        return df_train, df_test, df_valid
+        return df_train, df_test, df_valid,k
     
     def LOE_Encoder(self, df_train:dict, df_test:dict, columns:list ,sig:float,drop:bool)->tuple:
         """
@@ -311,7 +311,6 @@ class Model_class(object):
                     error = mean_absolute_error(df_test["return"], sum.round())
                     if error < best_error:
                         best_error = error
-                        # best_i = i
                         best_model1 = prob_list[j] + "_" + str(i/100)
                         best_model2 = prob_list[k] + "_" + str((100-i)/100)
                         best_combination = best_model1 + "/" + best_model2
