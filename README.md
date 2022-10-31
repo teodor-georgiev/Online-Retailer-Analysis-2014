@@ -38,7 +38,6 @@ Since both the neural network and the XGBboost models do not natively support ca
 
 ## Results
 After every round of feature engineering and modeling, we evaluated the performance of the models using the Mean Absolute Error (MAE) and removed models that did not perform well. Throughout several rounds of feature engineering and modeling as well as hyperparameter tuning, the best-performing model was the ``CatBoost`` model using its `GPU` implementation. Using the evaluation criteria defined in the Data Mining Cup 2014:
+$$ E= \sum_i^n \left\lvert returnShipment_i - prediction_i   \right\rvert$$
 
-$$E= \sum_i^n \left\lvert returnShipment_i - prediction_i   \right\rvert$$
-
-Where, $returnShipment_i$ is the information whether order item $i$ represents a return (0 means “item kept”, 1 means “item returned”), and $prediction_i$ is the predicted return probability for the order item $i$. The model achieved an MAE of `0.2974` on the test set and therefore ``14893 Points`` in the competition, which places the solution in the ``top 4`` of the ranking list of the Data Mining Cup 2014. 
+Where, $returnShipment_i$ is the information whether order item $i$ represents a return (0 means “item kept”, 1 means “item returned”), and $prediction_i$ is the predicted return probability for the order item $i$. The model achieved an MAE of `0.2974` on the test set and therefore ``14893 Points`` in the competition, which places the solution in the ``top 4`` of the [ranking list](https://www.wi.hs-wismar.de/~cleve/vorl/dmdaten/daten/DMC/DMC2014_Ranking.pdf) of the Data Mining Cup 2014. 
