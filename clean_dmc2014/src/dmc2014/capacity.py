@@ -49,7 +49,10 @@ def _local_fallback(profile: str) -> int:
 
 
 def _workers_from_cli(path: Path, profile: str) -> int | None:
-    if not path.is_file():
+    try:
+        if not path.is_file():
+            return None
+    except OSError:
         return None
     try:
         completed = subprocess.run(
