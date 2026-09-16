@@ -10,6 +10,7 @@ from typing import Iterable
 
 
 GIB = 1024 ** 3
+BATCH_MIN_CPU_FRACTION = 0.25
 DEFAULT_SHARED_CLI_CANDIDATES = (
     Path("/srv/projects/chatgpt-compute-chatgpt-edit/admin/vps_capacity.py"),
     Path("/srv/sentinelx-agents/lane-1/chatgpt-compute/admin/vps_capacity.py"),
@@ -69,20 +70,24 @@ def _local_fallback(profile: str) -> int:
     if profile == "light":
         reserve = max(2, math.ceil(cpus * 0.25))
         max_workers = 2
+        min_cpu_floor = 1
         memory_headroom = 3 * GIB
     elif profile == "default":
         reserve = max(2, math.ceil(cpus * 0.25))
         max_workers = cpus
+        min_cpu_floor = 1
         memory_headroom = 4 * GIB
     elif profile == "batch":
         reserve = max(1, math.ceil(cpus * 0.125))
         max_workers = cpus
+        min_cpu_floor = max(1, math.ceil(cpus * BATCH_MIN_CPU_FRACTION))
         memory_headroom = 3 * GIB
     else:
         raise ValueError(f"unknown capacity profile: {profile}")
 
     load = min(float(cpus), _local_load_average())
-    cpu_budget = max(1, math.floor(cpus - reserve - load))
+    pressure_budget = math.floor(cpus - reserve - load)
+    cpu_budget = max(min_cpu_floor, pressure_budget)
     available_memory = _local_memory_available_bytes()
     if available_memory is not None and available_memory < memory_headroom:
         return 1
