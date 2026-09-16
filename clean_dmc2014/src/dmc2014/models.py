@@ -21,21 +21,18 @@ class ModelResult:
 def _validate_feature_sets(train: FeatureSet, valid: FeatureSet) -> None:
     if train.y is None or valid.y is None:
         raise ValueError("train and validation targets are required")
-    if train.X.columns.tolist() != valid.X.columns.tolist():
-        raise ValueError("train and validation feature columns must match exactly")
-    if train.categorical != valid.categorical:
-        raise ValueError("train and validation categorical columns must match")
+    _validate_feature_columns(train, valid)
 
 
-def fit_catboost(
-    train: FeatureSet,
-    valid: FeatureSet,
-    params: dict | None = None,
-) -> ModelResult:
-    from catboost import CatBoostClassifier
+def _validate_feature_columns(train: FeatureSet, other: FeatureSet) -> None:
+    if train.X.columns.tolist() != other.X.columns.tolist():
+        raise ValueError("feature columns must match exactly")
+    if train.categorical != other.categorical:
+        raise ValueError("categorical columns must match")
 
-    _validate_feature_sets(train, valid)
-    defaults = {
+
+def _catboost_defaults() -> dict:
+    return {
         "iterations": 500,
         "depth": 8,
         "learning_rate": 0.05,
@@ -48,17 +45,46 @@ def fit_catboost(
         "allow_writing_files": False,
         "verbose": False,
     }
-    defaults.update(params or {})
+
+
+def _lightgbm_defaults() -> dict:
+    return {
+        "objective": "binary",
+        "n_estimators": 600,
+        "learning_rate": 0.04,
+        "num_leaves": 63,
+        "min_child_samples": 80,
+        "subsample": 0.9,
+        "colsample_bytree": 0.9,
+        "reg_lambda": 3.0,
+        "random_state": 42,
+        "n_jobs": 2,
+        "verbosity": -1,
+        "deterministic": True,
+        "force_col_wise": True,
+    }
+
+
+def fit_catboost(
+    train: FeatureSet,
+    valid: FeatureSet,
+    params: dict | None = None,
+) -> ModelResult:
+    from catboost import CatBoostClassifier
+
+    _validate_feature_sets(train, valid)
+    settings = _catboost_defaults()
+    settings.update(params or {})
 
     started = perf_counter()
-    model = CatBoostClassifier(**defaults)
+    model = CatBoostClassifier(**settings)
     model.fit(
         train.X,
         np.asarray(train.y, dtype=int),
         cat_features=train.categorical,
         eval_set=(valid.X, np.asarray(valid.y, dtype=int)),
         use_best_model=True,
-        early_stopping_rounds=min(80, max(10, int(defaults["iterations"]) // 5)),
+        early_stopping_rounds=min(80, max(10, int(settings["iterations"]) // 5)),
         verbose=False,
     )
     probabilities = model.predict_proba(valid.X)[:, 1].astype(float)
@@ -96,26 +122,12 @@ def fit_lightgbm(
     import lightgbm as lgb
 
     _validate_feature_sets(train, valid)
-    defaults = {
-        "objective": "binary",
-        "n_estimators": 600,
-        "learning_rate": 0.04,
-        "num_leaves": 63,
-        "min_child_samples": 80,
-        "subsample": 0.9,
-        "colsample_bytree": 0.9,
-        "reg_lambda": 3.0,
-        "random_state": 42,
-        "n_jobs": 2,
-        "verbosity": -1,
-        "deterministic": True,
-        "force_col_wise": True,
-    }
-    defaults.update(params or {})
+    settings = _lightgbm_defaults()
+    settings.update(params or {})
     train_x, valid_x = _lightgbm_frames(train, valid)
 
     started = perf_counter()
-    model = lgb.LGBMClassifier(**defaults)
+    model = lgb.LGBMClassifier(**settings)
     callbacks = [lgb.early_stopping(60, verbose=False)]
     model.fit(
         train_x,
@@ -126,10 +138,57 @@ def fit_lightgbm(
         categorical_feature=train.categorical,
     )
     probabilities = model.predict_proba(valid_x)[:, 1].astype(float)
-    best_iteration = int(getattr(model, "best_iteration_", 0) or defaults["n_estimators"])
+    best_iteration = int(getattr(model, "best_iteration_", 0) or settings["n_estimators"])
     return ModelResult(
         probabilities=probabilities,
         model=model,
         best_iteration=max(1, best_iteration),
         runtime_seconds=perf_counter() - started,
     )
+
+
+def fit_final_probabilities(
+    model_name: str,
+    train: FeatureSet,
+    competition: FeatureSet,
+    params: dict | None,
+    iterations: int,
+) -> np.ndarray:
+    """Fit on all labeled history with a fixed CV-selected iteration count."""
+    if train.y is None:
+        raise ValueError("training target is required")
+    if iterations < 1:
+        raise ValueError("iterations must be positive")
+    _validate_feature_columns(train, competition)
+
+    if model_name == "catboost":
+        from catboost import CatBoostClassifier
+
+        settings = _catboost_defaults()
+        settings.update(params or {})
+        settings["iterations"] = int(iterations)
+        model = CatBoostClassifier(**settings)
+        model.fit(
+            train.X,
+            np.asarray(train.y, dtype=int),
+            cat_features=train.categorical,
+            verbose=False,
+        )
+        return model.predict_proba(competition.X)[:, 1].astype(float)
+
+    if model_name == "lightgbm":
+        import lightgbm as lgb
+
+        settings = _lightgbm_defaults()
+        settings.update(params or {})
+        settings["n_estimators"] = int(iterations)
+        train_x, competition_x = _lightgbm_frames(train, competition)
+        model = lgb.LGBMClassifier(**settings)
+        model.fit(
+            train_x,
+            np.asarray(train.y, dtype=int),
+            categorical_feature=train.categorical,
+        )
+        return model.predict_proba(competition_x)[:, 1].astype(float)
+
+    raise ValueError(f"unknown model: {model_name}")
