@@ -40,6 +40,30 @@ def dmc_score(y_true: Sequence[float], prediction: Sequence[float]) -> float:
     return float(np.abs(truth - pred).sum())
 
 
+def best_threshold(
+    y_true: Sequence[int],
+    probability: Sequence[float],
+    thresholds: Sequence[float] | None = None,
+) -> tuple[float, float]:
+    """Choose the probability threshold with the lowest hard DMC point total."""
+    truth = np.asarray(y_true, dtype=int)
+    prob = np.asarray(probability, dtype=float)
+    if truth.shape != prob.shape:
+        raise ValueError(f"shape mismatch: {truth.shape} != {prob.shape}")
+    if thresholds is None:
+        thresholds = np.linspace(0.30, 0.70, 161)
+    candidates = [float(value) for value in thresholds]
+    if not candidates:
+        raise ValueError("thresholds must not be empty")
+
+    scored = []
+    for threshold in candidates:
+        prediction = (prob >= threshold).astype(int)
+        scored.append((dmc_score(truth, prediction), threshold))
+    points, threshold = min(scored, key=lambda item: (item[0], abs(item[1] - 0.5), item[1]))
+    return float(threshold), float(points)
+
+
 def load_competition_data(data_dir: str | Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Load train and competition predictors without touching released test labels."""
     root = Path(data_dir)
