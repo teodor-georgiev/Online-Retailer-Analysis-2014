@@ -5,14 +5,14 @@ import json
 import zipfile
 from pathlib import Path
 
-import numpy as np
-
 from dmc2014_benchmark import (
     best_threshold,
     build_row_features,
     candidate_configs,
     dmc_score,
     fit_candidate,
+    fit_lightgbm_candidate,
+    lightgbm_configs,
     load_competition_data,
     prepare_prediction_features,
     prepare_training_features,
@@ -54,12 +54,25 @@ def prepare_mode(history, valid, feature_mode: str):
     return train_x, train_y, valid_x, valid["returnShipment"].to_numpy(dtype=int), categorical
 
 
-def run_validation(repo_root: Path, feature_modes: list[str], full_sweep: bool) -> dict:
+def model_family(model_name: str):
+    if model_name == "lightgbm":
+        return lightgbm_configs(), fit_lightgbm_candidate
+    if model_name == "catboost":
+        return candidate_configs(), fit_candidate
+    raise ValueError(f"unknown model: {model_name}")
+
+
+def run_validation(
+    repo_root: Path,
+    feature_modes: list[str],
+    full_sweep: bool,
+    model_name: str,
+) -> dict:
     data_dir = ensure_data(repo_root)
     train, _ = load_competition_data(data_dir)
     history, valid = split_train_validation(train)
 
-    configs = candidate_configs()
+    configs, fitter = model_family(model_name)
     if not full_sweep:
         configs = configs[:1]
 
@@ -67,7 +80,7 @@ def run_validation(repo_root: Path, feature_modes: list[str], full_sweep: bool) 
     for feature_mode in feature_modes:
         train_x, train_y, valid_x, valid_y, categorical = prepare_mode(history, valid, feature_mode)
         for config in configs:
-            model, probability, best_iteration = fit_candidate(
+            model, probability, best_iteration = fitter(
                 train_x,
                 train_y,
                 valid_x,
@@ -77,6 +90,7 @@ def run_validation(repo_root: Path, feature_modes: list[str], full_sweep: bool) 
             )
             threshold, hard_points = best_threshold(valid_y, probability)
             result = {
+                "model": model_name,
                 "feature_mode": feature_mode,
                 "name": config["name"],
                 "train_rows": int(len(train_y)),
@@ -95,6 +109,7 @@ def run_validation(repo_root: Path, feature_modes: list[str], full_sweep: bool) 
 
     best = min(results, key=lambda item: item["validation_points"])
     summary = {
+        "model": model_name,
         "history_rows": int(len(history)),
         "validation_rows": int(len(valid)),
         "results": results,
@@ -108,11 +123,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parent))
     parser.add_argument("--feature-mode", choices=["raw", "history", "both"], default="both")
+    parser.add_argument("--model", choices=["lightgbm", "catboost"], default="lightgbm")
     parser.add_argument("--full-sweep", action="store_true")
     args = parser.parse_args()
 
     modes = ["raw", "history"] if args.feature_mode == "both" else [args.feature_mode]
-    run_validation(Path(args.repo_root), modes, full_sweep=args.full_sweep)
+    run_validation(Path(args.repo_root), modes, full_sweep=args.full_sweep, model_name=args.model)
 
 
 if __name__ == "__main__":
