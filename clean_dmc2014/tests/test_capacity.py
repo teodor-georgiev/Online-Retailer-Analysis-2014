@@ -41,41 +41,54 @@ def test_shared_capacity_cli_is_used_when_configured(monkeypatch, tmp_path):
     assert resolve_workers("batch") == 11
 
 
-def test_local_batch_fallback_uses_most_but_not_all_affinity_when_idle(monkeypatch):
-    _clear_overrides(monkeypatch)
+def _mock_local_host(monkeypatch, *, load, busy, available_gib=32):
     monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(range(16)))
-    monkeypatch.setattr(os, "getloadavg", lambda: (0.0, 0.0, 0.0))
-    monkeypatch.setattr(capacity, "_local_memory_available_bytes", lambda: 32 * 1024**3)
-    assert resolve_workers("batch", shared_cli_candidates=[]) == 14
+    monkeypatch.setattr(os, "getloadavg", lambda: (load, load, load))
+    monkeypatch.setattr(capacity, "_local_cpu_busy_fraction", lambda: busy)
+    monkeypatch.setattr(
+        capacity,
+        "_local_memory_available_bytes",
+        lambda: available_gib * 1024**3,
+    )
 
 
-def test_local_default_fallback_keeps_more_headroom_when_idle(monkeypatch):
+def test_local_batch_fallback_uses_all_cores_when_idle(monkeypatch):
     _clear_overrides(monkeypatch)
-    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(range(16)))
-    monkeypatch.setattr(os, "getloadavg", lambda: (0.0, 0.0, 0.0))
-    monkeypatch.setattr(capacity, "_local_memory_available_bytes", lambda: 32 * 1024**3)
-    assert resolve_workers("default", shared_cli_candidates=[]) == 12
+    _mock_local_host(monkeypatch, load=0.0, busy=0.0)
+    assert resolve_workers("batch", shared_cli_candidates=[]) == 16
 
 
-def test_local_batch_fallback_keeps_quarter_cpu_floor_under_high_load(monkeypatch):
+def test_local_batch_fallback_fills_utilization_gap(monkeypatch):
     _clear_overrides(monkeypatch)
-    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(range(16)))
-    monkeypatch.setattr(os, "getloadavg", lambda: (13.2, 10.0, 8.0))
-    monkeypatch.setattr(capacity, "_local_memory_available_bytes", lambda: 32 * 1024**3)
+    _mock_local_host(monkeypatch, load=8.0, busy=0.50)
+    assert resolve_workers("batch", shared_cli_candidates=[]) == 8
+
+
+def test_local_batch_fallback_soft_brakes_at_load_28(monkeypatch):
+    _clear_overrides(monkeypatch)
+    _mock_local_host(monkeypatch, load=28.0, busy=0.0)
+    assert resolve_workers("batch", shared_cli_candidates=[]) == 10
+
+
+def test_local_batch_fallback_hard_brakes_at_load_32(monkeypatch):
+    _clear_overrides(monkeypatch)
+    _mock_local_host(monkeypatch, load=32.0, busy=0.0)
     assert resolve_workers("batch", shared_cli_candidates=[]) == 4
 
 
-def test_local_default_fallback_can_back_off_below_quarter_under_high_load(monkeypatch):
+def test_local_batch_fallback_clamps_at_emergency_load(monkeypatch):
     _clear_overrides(monkeypatch)
-    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(range(16)))
-    monkeypatch.setattr(os, "getloadavg", lambda: (13.2, 10.0, 8.0))
-    monkeypatch.setattr(capacity, "_local_memory_available_bytes", lambda: 32 * 1024**3)
+    _mock_local_host(monkeypatch, load=48.0, busy=0.0)
+    assert resolve_workers("batch", shared_cli_candidates=[]) == 1
+
+
+def test_local_default_fallback_remains_conservative(monkeypatch):
+    _clear_overrides(monkeypatch)
+    _mock_local_host(monkeypatch, load=13.2, busy=0.0)
     assert resolve_workers("default", shared_cli_candidates=[]) == 1
 
 
 def test_local_fallback_backs_off_when_memory_headroom_is_low(monkeypatch):
     _clear_overrides(monkeypatch)
-    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(range(16)))
-    monkeypatch.setattr(os, "getloadavg", lambda: (0.0, 0.0, 0.0))
-    monkeypatch.setattr(capacity, "_local_memory_available_bytes", lambda: 2 * 1024**3)
+    _mock_local_host(monkeypatch, load=0.0, busy=0.0, available_gib=2)
     assert resolve_workers("batch", shared_cli_candidates=[]) == 1
