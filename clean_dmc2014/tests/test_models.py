@@ -45,6 +45,23 @@ def test_catboost_adapter_returns_probabilities():
     assert_result(result)
 
 
+def test_catboost_can_run_fixed_iterations_without_logloss_early_stop():
+    train, valid = tiny_feature_sets()
+    result = fit_catboost(
+        train,
+        valid,
+        {
+            "iterations": 7,
+            "depth": 3,
+            "learning_rate": 0.1,
+            "thread_count": 1,
+            "_early_stopping_rounds": None,
+        },
+    )
+    assert_result(result)
+    assert result.best_iteration == 7
+
+
 def test_lightgbm_adapter_returns_probabilities():
     train, valid = tiny_feature_sets()
     result = fit_lightgbm(
