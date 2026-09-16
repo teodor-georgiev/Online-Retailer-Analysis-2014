@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 
+import dmc2014.models as models
 from dmc2014.features import FeatureSet
 from dmc2014.models import fit_catboost, fit_lightgbm
 
@@ -33,6 +34,12 @@ def assert_result(result):
     assert np.all((result.probabilities >= 0) & (result.probabilities <= 1))
     assert result.best_iteration >= 1
     assert result.runtime_seconds >= 0
+
+
+def test_model_defaults_use_dynamic_workers(monkeypatch):
+    monkeypatch.setattr(models, "resolve_workers", lambda profile: 7)
+    assert models._catboost_defaults()["thread_count"] == 7
+    assert models._lightgbm_defaults()["n_jobs"] == 7
 
 
 def test_catboost_adapter_returns_probabilities():
