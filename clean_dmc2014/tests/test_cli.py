@@ -183,3 +183,27 @@ def test_ensemble_backtest_path_never_loads_final_labels(tmp_path, monkeypatch):
         cli.FeatureConfig(user_profiles=True, product_profiles=True),
     )
     assert result == {"rows": 4, "model": "ensemble"}
+
+
+def test_parse_json_handles_long_inline_payload_without_path_probe():
+    payload = {
+        "catboost": {
+            "iterations": 120,
+            "depth": 7,
+            "learning_rate": 0.07,
+            "max_ctr_complexity": 2,
+            "_early_stopping_rounds": None,
+        },
+        "lightgbm": {
+            "n_estimators": 600,
+            "learning_rate": 0.04,
+            "num_leaves": 63,
+            "min_child_samples": 80,
+            "subsample": 0.9,
+            "colsample_bytree": 0.9,
+            "reg_lambda": 3.0,
+        },
+    }
+    rendered = __import__("json").dumps(payload)
+    assert len(rendered) > 255
+    assert cli._parse_json(rendered) == payload
