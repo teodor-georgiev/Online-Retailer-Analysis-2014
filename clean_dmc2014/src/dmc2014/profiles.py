@@ -294,7 +294,12 @@ def _build_product_profiles(source: pd.DataFrame) -> pd.DataFrame:
     output["item_days_since_first_sale"] = (
         current_date - item_first
     ).dt.total_seconds() / 86400.0
-    output["item_prior_repeat_buyer_count"] = output["item_prior_unique_customers"]
+    output["item_prior_repeat_purchase_count"] = (
+        output["item_prior_sales_count"] - output["item_prior_unique_customers"]
+    ).clip(lower=0.0)
+    output["item_prior_repeat_purchase_share"] = _safe_ratio(
+        output["item_prior_repeat_purchase_count"], output["item_prior_sales_count"]
+    )
 
     manufacturer_daily, manufacturer = _entity_mapped(source, ("manufacturerID",))
     manufacturer_previous = pd.to_datetime(manufacturer["previous_date"], errors="coerce")
