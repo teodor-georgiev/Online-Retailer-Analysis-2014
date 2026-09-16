@@ -7,6 +7,10 @@ import numpy as np
 import pandas as pd
 
 from dmc2014.profiles import build_training_profiles, build_validation_profiles
+from dmc2014.rolling import (
+    build_training_rolling_profiles,
+    build_validation_rolling_profiles,
+)
 
 
 CATEGORICAL_COLUMNS = [
@@ -48,6 +52,7 @@ class FeatureConfig:
     recency_groups: tuple[tuple[str, ...], ...] = DEFAULT_RECENCY_GROUPS
     user_profiles: bool = False
     product_profiles: bool = False
+    rolling_profiles: bool = False
 
 
 @dataclass
@@ -340,6 +345,8 @@ def build_training_features(
         product_profiles=config.product_profiles,
     )
     output = _append_profile_columns(output, profiles)
+    if config.rolling_profiles:
+        output = _append_profile_columns(output, build_training_rolling_profiles(data))
     target = pd.to_numeric(data["returnShipment"], errors="raise").to_numpy(dtype=int)
     return FeatureSet(X=output.reset_index(drop=True), y=target, categorical=categorical)
 
@@ -387,6 +394,11 @@ def build_validation_features(
         product_profiles=config.product_profiles,
     )
     output = _append_profile_columns(output, profiles)
+    if config.rolling_profiles:
+        output = _append_profile_columns(
+            output,
+            build_validation_rolling_profiles(history, validation),
+        )
 
     target = None
     if "returnShipment" in validation.columns:
