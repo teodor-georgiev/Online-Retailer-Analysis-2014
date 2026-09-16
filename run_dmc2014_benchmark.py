@@ -18,6 +18,7 @@ from dmc2014_benchmark import (
     prepare_training_features,
     split_train_validation,
 )
+from dmc2014_views import numeric_history_view
 
 
 def ensure_data(repo_root: Path) -> Path:
@@ -39,9 +40,12 @@ def prepare_mode(history, valid, feature_mode: str):
         train_x, categorical = build_row_features(history)
         valid_x, valid_categorical = build_row_features(valid)
         train_y = history["returnShipment"].to_numpy(dtype=int)
-    elif feature_mode == "history":
+    elif feature_mode in {"history", "history_numeric"}:
         train_x, train_y, categorical = prepare_training_features(history)
         valid_x, valid_categorical = prepare_prediction_features(history, valid)
+        if feature_mode == "history_numeric":
+            train_x, categorical = numeric_history_view(train_x, categorical)
+            valid_x, valid_categorical = numeric_history_view(valid_x, valid_categorical)
     else:
         raise ValueError(f"unknown feature mode: {feature_mode}")
 
@@ -122,12 +126,16 @@ def run_validation(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parent))
-    parser.add_argument("--feature-mode", choices=["raw", "history", "both"], default="both")
+    parser.add_argument(
+        "--feature-mode",
+        choices=["raw", "history", "history_numeric", "both"],
+        default="history_numeric",
+    )
     parser.add_argument("--model", choices=["lightgbm", "catboost"], default="lightgbm")
     parser.add_argument("--full-sweep", action="store_true")
     args = parser.parse_args()
 
-    modes = ["raw", "history"] if args.feature_mode == "both" else [args.feature_mode]
+    modes = ["raw", "history_numeric"] if args.feature_mode == "both" else [args.feature_mode]
     run_validation(Path(args.repo_root), modes, full_sweep=args.full_sweep, model_name=args.model)
 
 
