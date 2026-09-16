@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Sequence
+
 import numpy as np
 import pandas as pd
 
@@ -14,11 +17,69 @@ CATEGORICAL_COLUMNS = [
     "state",
 ]
 
+DEFAULT_HISTORY_GROUPS = (
+    ("customerID",),
+    ("itemID",),
+    ("manufacturerID",),
+    ("size",),
+    ("color",),
+    ("state",),
+    ("customerID", "manufacturerID"),
+    ("customerID", "size"),
+    ("itemID", "size"),
+    ("manufacturerID", "itemID"),
+)
+
+DEFAULT_RECENCY_GROUPS = (
+    ("customerID",),
+    ("itemID",),
+    ("manufacturerID",),
+    ("customerID", "itemID"),
+    ("customerID", "manufacturerID"),
+)
+
+
+@dataclass(frozen=True)
+class FeatureConfig:
+    history_groups: tuple[tuple[str, ...], ...] = DEFAULT_HISTORY_GROUPS
+    smoothing: float = 20.0
+    recency_groups: tuple[tuple[str, ...], ...] = DEFAULT_RECENCY_GROUPS
+
+
+@dataclass
+class FeatureSet:
+    X: pd.DataFrame
+    y: np.ndarray | None
+    categorical: list[str]
+
 
 def _datetime(frame: pd.DataFrame, column: str) -> pd.Series:
     if column not in frame.columns:
         return pd.Series(pd.NaT, index=frame.index, dtype="datetime64[ns]")
     return pd.to_datetime(frame[column], errors="coerce")
+
+
+def _prefix(columns: Sequence[str]) -> str:
+    return "_x_".join(columns)
+
+
+def _require_columns(frame: pd.DataFrame, columns: Sequence[str]) -> None:
+    missing = [column for column in columns if column not in frame.columns]
+    if missing:
+        raise KeyError(f"missing required columns: {missing}")
+
+
+def _merge_values(
+    target: pd.DataFrame,
+    table: pd.DataFrame,
+    keys: Sequence[str],
+    value_columns: Sequence[str],
+) -> pd.DataFrame:
+    left = target[list(keys)].copy()
+    left["__row_id__"] = np.arange(len(left))
+    merged = left.merge(table, on=list(keys), how="left", sort=False)
+    merged = merged.sort_values("__row_id__", kind="stable")
+    return merged[list(value_columns)].reset_index(drop=True)
 
 
 def build_base_features(frame: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
@@ -95,3 +156,212 @@ def build_base_features(frame: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         output[column] = values.replace({"?": "__MISSING__"}).astype(str)
 
     return output, categorical
+
+
+def _training_global_prior(data: pd.DataFrame) -> np.ndarray:
+    daily = (
+        data.groupby("orderDate", dropna=False, observed=True)["returnShipment"]
+        .agg(["sum", "count"])
+        .sort_index()
+    )
+    daily["prior_sum"] = daily["sum"].cumsum() - daily["sum"]
+    daily["prior_count"] = daily["count"].cumsum() - daily["count"]
+    daily["prior_rate"] = np.where(
+        daily["prior_count"] > 0,
+        daily["prior_sum"] / daily["prior_count"],
+        0.5,
+    )
+    return data["orderDate"].map(daily["prior_rate"]).astype(float).to_numpy()
+
+
+def _add_training_target_history(
+    data: pd.DataFrame,
+    output: pd.DataFrame,
+    groups: Sequence[tuple[str, ...]],
+    smoothing: float,
+) -> None:
+    if smoothing < 0:
+        raise ValueError("smoothing must be non-negative")
+    global_prior = _training_global_prior(data)
+
+    for columns in groups:
+        columns = tuple(columns)
+        _require_columns(data, columns)
+        prefix = _prefix(columns)
+        keys = [*columns, "orderDate"]
+        daily = (
+            data.groupby(keys, dropna=False, observed=True)["returnShipment"]
+            .agg(["sum", "count"])
+            .reset_index()
+            .sort_values(keys, kind="stable")
+        )
+        grouped = daily.groupby(list(columns), dropna=False, observed=True)
+        daily["prior_sum"] = grouped["sum"].cumsum() - daily["sum"]
+        daily["prior_count"] = grouped["count"].cumsum() - daily["count"]
+        mapped = _merge_values(
+            data,
+            daily[keys + ["prior_sum", "prior_count"]],
+            keys,
+            ["prior_sum", "prior_count"],
+        )
+        prior_sum = mapped["prior_sum"].fillna(0.0).to_numpy(dtype=float)
+        prior_count = mapped["prior_count"].fillna(0.0).to_numpy(dtype=float)
+        denominator = prior_count + smoothing
+        rate = np.where(
+            denominator > 0,
+            (prior_sum + smoothing * global_prior) / denominator,
+            global_prior,
+        )
+        output[f"hist_{prefix}_count"] = prior_count
+        output[f"hist_{prefix}_return_rate"] = rate
+
+
+def _add_validation_target_history(
+    history: pd.DataFrame,
+    validation: pd.DataFrame,
+    output: pd.DataFrame,
+    groups: Sequence[tuple[str, ...]],
+    smoothing: float,
+) -> None:
+    if smoothing < 0:
+        raise ValueError("smoothing must be non-negative")
+    prior = float(history["returnShipment"].mean()) if len(history) else 0.5
+
+    for columns in groups:
+        columns = tuple(columns)
+        _require_columns(history, columns)
+        _require_columns(validation, columns)
+        prefix = _prefix(columns)
+        stats = (
+            history.groupby(list(columns), dropna=False, observed=True)["returnShipment"]
+            .agg(["sum", "count"])
+            .reset_index()
+        )
+        mapped = _merge_values(
+            validation,
+            stats,
+            list(columns),
+            ["sum", "count"],
+        )
+        prior_sum = mapped["sum"].fillna(0.0).to_numpy(dtype=float)
+        prior_count = mapped["count"].fillna(0.0).to_numpy(dtype=float)
+        denominator = prior_count + smoothing
+        rate = np.where(
+            denominator > 0,
+            (prior_sum + smoothing * prior) / denominator,
+            prior,
+        )
+        output[f"hist_{prefix}_count"] = prior_count
+        output[f"hist_{prefix}_return_rate"] = rate
+
+
+def _predictor_history_table(
+    frame: pd.DataFrame,
+    columns: tuple[str, ...],
+) -> pd.DataFrame:
+    keys = [*columns, "orderDate"]
+    daily = (
+        frame.groupby(keys, dropna=False, observed=True)
+        .size()
+        .rename("row_count")
+        .reset_index()
+        .sort_values(keys, kind="stable")
+    )
+    grouped = daily.groupby(list(columns), dropna=False, observed=True)
+    daily["prior_row_count"] = grouped["row_count"].cumsum() - daily["row_count"]
+    daily["previous_seen_date"] = grouped["orderDate"].shift(1)
+    return daily[keys + ["prior_row_count", "previous_seen_date"]]
+
+
+def _add_predictor_history(
+    source: pd.DataFrame,
+    target: pd.DataFrame,
+    output: pd.DataFrame,
+    groups: Sequence[tuple[str, ...]],
+) -> None:
+    for columns in groups:
+        columns = tuple(columns)
+        _require_columns(source, columns)
+        _require_columns(target, columns)
+        prefix = _prefix(columns)
+        table = _predictor_history_table(source, columns)
+        keys = [*columns, "orderDate"]
+        mapped = _merge_values(
+            target,
+            table,
+            keys,
+            ["prior_row_count", "previous_seen_date"],
+        )
+        count = mapped["prior_row_count"].fillna(0.0).to_numpy(dtype=float)
+        previous = pd.to_datetime(mapped["previous_seen_date"], errors="coerce")
+        current = pd.to_datetime(target["orderDate"], errors="coerce").reset_index(drop=True)
+        days = (current - previous).dt.total_seconds() / 86400.0
+        output[f"prior_{prefix}_row_count"] = count
+        output[f"days_since_{prefix}_seen"] = days.to_numpy(dtype=float)
+
+
+def build_training_features(
+    train_frame: pd.DataFrame,
+    config: FeatureConfig | None = None,
+) -> FeatureSet:
+    config = config or FeatureConfig()
+    data = train_frame.copy().reset_index(drop=True)
+    if "returnShipment" not in data.columns:
+        raise KeyError("training frame must contain returnShipment")
+    data["orderDate"] = pd.to_datetime(data["orderDate"], errors="raise")
+
+    output, categorical = build_base_features(data)
+    _add_training_target_history(
+        data,
+        output,
+        config.history_groups,
+        config.smoothing,
+    )
+    _add_predictor_history(data, data, output, config.recency_groups)
+    target = pd.to_numeric(data["returnShipment"], errors="raise").to_numpy(dtype=int)
+    return FeatureSet(X=output.reset_index(drop=True), y=target, categorical=categorical)
+
+
+def build_validation_features(
+    history_frame: pd.DataFrame,
+    validation_frame: pd.DataFrame,
+    config: FeatureConfig | None = None,
+) -> FeatureSet:
+    config = config or FeatureConfig()
+    history = history_frame.copy().reset_index(drop=True)
+    validation = validation_frame.copy().reset_index(drop=True)
+    if "returnShipment" not in history.columns:
+        raise KeyError("history frame must contain returnShipment")
+    history["orderDate"] = pd.to_datetime(history["orderDate"], errors="raise")
+    validation["orderDate"] = pd.to_datetime(validation["orderDate"], errors="raise")
+
+    output, categorical = build_base_features(validation)
+    _add_validation_target_history(
+        history,
+        validation,
+        output,
+        config.history_groups,
+        config.smoothing,
+    )
+
+    predictor_source = pd.concat(
+        [
+            history.drop(columns=["returnShipment"], errors="ignore"),
+            validation.drop(columns=["returnShipment"], errors="ignore"),
+        ],
+        ignore_index=True,
+        sort=False,
+    )
+    _add_predictor_history(
+        predictor_source,
+        validation,
+        output,
+        config.recency_groups,
+    )
+
+    target = None
+    if "returnShipment" in validation.columns:
+        target = pd.to_numeric(
+            validation["returnShipment"], errors="raise"
+        ).to_numpy(dtype=int)
+    return FeatureSet(X=output.reset_index(drop=True), y=target, categorical=categorical)
