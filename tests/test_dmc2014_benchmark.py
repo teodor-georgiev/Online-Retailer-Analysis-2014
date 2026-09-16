@@ -3,6 +3,7 @@ import pandas as pd
 
 from dmc2014_benchmark import (
     add_history_features,
+    best_threshold,
     build_row_features,
     candidate_configs,
     choose_best_result,
@@ -20,6 +21,14 @@ def test_dmc_score_is_sum_absolute_error():
     y = np.array([0.0, 1.0, 1.0])
     p = np.array([0.2, 0.7, 0.9])
     assert np.isclose(dmc_score(y, p), 0.6)
+
+
+def test_best_threshold_minimizes_hard_dmc_points():
+    y = np.array([0, 0, 1, 1])
+    p = np.array([0.10, 0.45, 0.46, 0.90])
+    threshold, points = best_threshold(y, p, thresholds=[0.4, 0.45, 0.5])
+    assert threshold == 0.45
+    assert points == 0.0
 
 
 def test_split_uses_march_2013_as_validation_only():
