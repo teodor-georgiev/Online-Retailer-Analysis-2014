@@ -6,6 +6,8 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
+from dmc2014.profiles import build_training_profiles, build_validation_profiles
+
 
 CATEGORICAL_COLUMNS = [
     "itemID",
@@ -44,6 +46,8 @@ class FeatureConfig:
     history_groups: tuple[tuple[str, ...], ...] = DEFAULT_HISTORY_GROUPS
     smoothing: float = 20.0
     recency_groups: tuple[tuple[str, ...], ...] = DEFAULT_RECENCY_GROUPS
+    user_profiles: bool = False
+    product_profiles: bool = False
 
 
 @dataclass
@@ -80,6 +84,18 @@ def _merge_values(
     merged = left.merge(table, on=list(keys), how="left", sort=False)
     merged = merged.sort_values("__row_id__", kind="stable")
     return merged[list(value_columns)].reset_index(drop=True)
+
+
+def _append_profile_columns(output: pd.DataFrame, profiles: pd.DataFrame) -> pd.DataFrame:
+    if len(output) != len(profiles):
+        raise ValueError(f"profile row mismatch: {len(profiles)} != {len(output)}")
+    duplicates = sorted(set(output.columns).intersection(profiles.columns))
+    if duplicates:
+        raise ValueError(f"duplicate profile columns: {duplicates}")
+    return pd.concat(
+        [output.reset_index(drop=True), profiles.reset_index(drop=True)],
+        axis=1,
+    )
 
 
 def build_base_features(frame: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
@@ -318,6 +334,12 @@ def build_training_features(
         config.smoothing,
     )
     _add_predictor_history(data, data, output, config.recency_groups)
+    profiles = build_training_profiles(
+        data,
+        user_profiles=config.user_profiles,
+        product_profiles=config.product_profiles,
+    )
+    output = _append_profile_columns(output, profiles)
     target = pd.to_numeric(data["returnShipment"], errors="raise").to_numpy(dtype=int)
     return FeatureSet(X=output.reset_index(drop=True), y=target, categorical=categorical)
 
@@ -358,6 +380,13 @@ def build_validation_features(
         output,
         config.recency_groups,
     )
+    profiles = build_validation_profiles(
+        history,
+        validation,
+        user_profiles=config.user_profiles,
+        product_profiles=config.product_profiles,
+    )
+    output = _append_profile_columns(output, profiles)
 
     target = None
     if "returnShipment" in validation.columns:
