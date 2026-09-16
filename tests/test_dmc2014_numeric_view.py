@@ -1,6 +1,6 @@
 import pandas as pd
 
-from dmc2014_benchmark import numeric_history_view
+from dmc2014_views import numeric_history_view
 
 
 def test_numeric_history_view_drops_raw_ids_and_categoricals():
