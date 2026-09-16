@@ -81,6 +81,15 @@ def test_loader_rejects_non_binary_training_target(tmp_path):
         load_train_and_class(archive)
 
 
+def test_loader_rejects_fractional_training_target(tmp_path):
+    archive = tmp_path / "fractional.zip"
+    with ZipFile(archive, "w") as zf:
+        _write_csv_member(zf, "orders_train.txt", TRAIN_COLUMNS, _row(0.5))
+        _write_csv_member(zf, "orders_class.txt", CLASS_COLUMNS, _row())
+    with pytest.raises(ValueError, match="binary"):
+        load_train_and_class(archive)
+
+
 def test_final_labels_are_loaded_only_explicitly(tmp_path):
     archive = tmp_path / "dmc.zip"
     make_zip(archive)
