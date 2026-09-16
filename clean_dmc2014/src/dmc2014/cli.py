@@ -20,6 +20,9 @@ from dmc2014.metrics import dmc_points
 from dmc2014.models import fit_final_probabilities
 
 
+DEFAULT_FEATURE_CACHE_DIR = "/tmp/dmc2014-feature-cache"
+
+
 def _feature_config_from_record(record: dict | None) -> FeatureConfig:
     record = record or {}
     history = record.get("history_groups", DEFAULT_HISTORY_GROUPS)
@@ -39,6 +42,9 @@ def backtest_from_zip(
     model_name: str,
     params: dict | None,
     feature_config: FeatureConfig,
+    *,
+    cache_dir: str | Path | None = DEFAULT_FEATURE_CACHE_DIR,
+    parallel_folds: bool = True,
 ) -> dict:
     train, _competition = load_train_and_class(zip_path)
     settings = dict(params or {})
@@ -62,6 +68,8 @@ def backtest_from_zip(
             feature_config=feature_config,
             catboost_feature_config=cat_feature_config,
             lightgbm_feature_config=lgb_feature_config,
+            cache_dir=cache_dir,
+            parallel_folds=parallel_folds,
         )
     return run_backtest(
         train,
@@ -183,6 +191,9 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument("--user-profiles", action="store_true")
     backtest.add_argument("--product-profiles", action="store_true")
     backtest.add_argument("--rolling-profiles", action="store_true")
+    backtest.add_argument("--cache-dir", default=DEFAULT_FEATURE_CACHE_DIR)
+    backtest.add_argument("--no-cache", action="store_true")
+    backtest.add_argument("--sequential-folds", action="store_true")
     backtest.add_argument("--output", default=None)
 
     final = subparsers.add_parser("final-evaluate")
@@ -209,6 +220,8 @@ def main() -> None:
             args.model,
             params,
             feature_config,
+            cache_dir=None if args.no_cache else args.cache_dir,
+            parallel_folds=not args.sequential_folds,
         )
         _emit(result, args.output)
         return
