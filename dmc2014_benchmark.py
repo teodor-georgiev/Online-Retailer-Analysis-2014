@@ -17,6 +17,19 @@ CATEGORICAL_COLUMNS = [
     "state",
 ]
 
+DEFAULT_GROUP_SPECS = [
+    ("customerID",),
+    ("itemID",),
+    ("manufacturerID",),
+    ("size",),
+    ("color",),
+    ("state",),
+    ("customerID", "manufacturerID"),
+    ("customerID", "size"),
+    ("manufacturerID", "itemID"),
+    ("itemID", "size"),
+]
+
 
 def dmc_score(y_true: Sequence[float], prediction: Sequence[float]) -> float:
     """Return the Data Mining Cup 2014 absolute-error point total."""
@@ -86,6 +99,15 @@ def build_row_features(frame: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         output["price"] = price
         output["log1p_price"] = np.log1p(price.clip(lower=0))
 
+    if {"customerID", "orderDate"}.issubset(frame.columns):
+        order_key = [frame["customerID"], order_date]
+        output["basket_item_count"] = frame.groupby(order_key, dropna=False)["orderItemID"].transform("size").astype(float)
+        if "price" in frame.columns:
+            output["basket_total_price"] = pd.to_numeric(frame["price"], errors="coerce").groupby(order_key, dropna=False).transform("sum")
+            output["basket_mean_price"] = pd.to_numeric(frame["price"], errors="coerce").groupby(order_key, dropna=False).transform("mean")
+        if "itemID" in frame.columns:
+            output["basket_unique_items"] = frame.groupby(order_key, dropna=False)["itemID"].transform("nunique").astype(float)
+
     output = output.drop(columns=["orderDate", "deliveryDate", "dateOfBirth", "creationDate"], errors="ignore")
 
     categorical = [column for column in CATEGORICAL_COLUMNS if column in output.columns]
@@ -113,7 +135,7 @@ def add_history_features(
         raise ValueError("smoothing must be non-negative")
 
     output = target.copy()
-    prior = float(history["returnShipment"].mean())
+    prior = float(history["returnShipment"].mean()) if len(history) else 0.5
 
     for columns in group_specs:
         columns = tuple(columns)
@@ -128,7 +150,15 @@ def add_history_features(
             .agg(["sum", "count"])
             .reset_index()
         )
-        stats["return_rate"] = (stats["sum"] + smoothing * prior) / (stats["count"] + smoothing)
+        if len(stats):
+            denominator = stats["count"] + smoothing
+            stats["return_rate"] = np.where(
+                denominator > 0,
+                (stats["sum"] + smoothing * prior) / denominator,
+                prior,
+            )
+        else:
+            stats["return_rate"] = pd.Series(dtype=float)
 
         prefix = _history_prefix(columns)
         count_name = f"hist_{prefix}_count"
@@ -143,6 +173,45 @@ def add_history_features(
         output[rate_name] = mapped["return_rate"].fillna(prior).astype(float).to_numpy()
 
     return output
+
+
+def prepare_training_features(
+    frame: pd.DataFrame,
+    group_specs: Iterable[tuple[str, ...]] = DEFAULT_GROUP_SPECS,
+    smoothing: float = 20.0,
+) -> tuple[pd.DataFrame, np.ndarray, list[str]]:
+    """Build month-expanding training features so a row never sees same/future labels."""
+    data = frame.copy().reset_index(drop=True)
+    data["orderDate"] = pd.to_datetime(data["orderDate"], errors="raise")
+    month_key = data["orderDate"].dt.to_period("M")
+    blocks: list[pd.DataFrame] = []
+    categorical: list[str] = []
+
+    for month in sorted(month_key.unique()):
+        target_mask = month_key == month
+        target_rows = data.loc[target_mask].copy()
+        history_rows = data.loc[month_key < month].copy()
+        enriched = add_history_features(history_rows, target_rows, group_specs, smoothing=smoothing)
+        block, categorical = build_row_features(enriched)
+        block["__row_order__"] = target_rows.index.to_numpy()
+        blocks.append(block)
+
+    features = pd.concat(blocks, ignore_index=True).sort_values("__row_order__")
+    row_order = features.pop("__row_order__").astype(int).to_numpy()
+    features = features.reset_index(drop=True)
+    target = data.loc[row_order, "returnShipment"].to_numpy(dtype=int)
+    return features, target, categorical
+
+
+def prepare_prediction_features(
+    history: pd.DataFrame,
+    target: pd.DataFrame,
+    group_specs: Iterable[tuple[str, ...]] = DEFAULT_GROUP_SPECS,
+    smoothing: float = 20.0,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Build features for a future window using only supplied labeled history."""
+    enriched = add_history_features(history, target, group_specs, smoothing=smoothing)
+    return build_row_features(enriched)
 
 
 def choose_best_result(results: Sequence[dict]) -> dict:
