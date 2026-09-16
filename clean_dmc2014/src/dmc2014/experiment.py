@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 import pandas as pd
 
+from dmc2014.capacity import resolve_workers
 from dmc2014.features import (
     FeatureConfig,
+    FeatureSet,
     build_training_features,
     build_validation_features,
 )
 from dmc2014.metrics import best_threshold, dmc_points
 from dmc2014.models import fit_catboost, fit_lightgbm
+from dmc2014.speed import FeatureCache, feature_cache_key, frame_fingerprint, plan_fold_workers
 from dmc2014.splits import TemporalFold, default_folds, split_fold
 
 
@@ -28,6 +34,7 @@ def _config_record(config: FeatureConfig) -> dict:
         "smoothing": float(config.smoothing),
         "user_profiles": bool(config.user_profiles),
         "product_profiles": bool(config.product_profiles),
+        "rolling_profiles": bool(config.rolling_profiles),
     }
 
 
@@ -201,6 +208,85 @@ def run_backtest(
     }
 
 
+def _prepare_feature_pair(
+    history: pd.DataFrame,
+    validation: pd.DataFrame,
+    config: FeatureConfig,
+    fold: TemporalFold,
+    dataset_fingerprint: str | None,
+    cache: FeatureCache | None,
+) -> tuple[FeatureSet, FeatureSet, bool, float]:
+    started = perf_counter()
+    key = None
+    if cache is not None:
+        if dataset_fingerprint is None:
+            raise ValueError("dataset fingerprint is required when feature cache is enabled")
+        key = feature_cache_key(dataset_fingerprint, fold, config)
+        restored = cache.load(key)
+        if restored is not None:
+            return restored[0], restored[1], True, perf_counter() - started
+
+    train_features = build_training_features(history, config)
+    valid_features = build_validation_features(history, validation, config)
+    if cache is not None and key is not None:
+        cache.store(key, train_features, valid_features)
+    return train_features, valid_features, False, perf_counter() - started
+
+
+def _bounded_model_workers(params: dict, key: str, fold_workers: int) -> dict:
+    settings = dict(params)
+    requested = settings.get(key)
+    if requested is None:
+        settings[key] = int(fold_workers)
+        return settings
+    try:
+        requested_int = int(requested)
+    except (TypeError, ValueError):
+        settings[key] = int(fold_workers)
+        return settings
+    settings[key] = int(fold_workers) if requested_int <= 0 else min(requested_int, int(fold_workers))
+    return settings
+
+
+def _fit_ensemble_fold(
+    prepared: dict,
+    cat_params: dict,
+    lgb_params: dict,
+    fold_workers: int,
+) -> dict:
+    cat_settings = _bounded_model_workers(cat_params, "thread_count", fold_workers)
+    lgb_settings = _bounded_model_workers(lgb_params, "n_jobs", fold_workers)
+    cat_result = fit_catboost(
+        prepared["cat_train_features"],
+        prepared["cat_valid_features"],
+        cat_settings,
+    )
+    lgb_result = fit_lightgbm(
+        prepared["lgb_train_features"],
+        prepared["lgb_valid_features"],
+        lgb_settings,
+    )
+    y_true = prepared["y_true"]
+    cat_probability = np.asarray(cat_result.probabilities, dtype=float)
+    lgb_probability = np.asarray(lgb_result.probabilities, dtype=float)
+    if cat_probability.shape != y_true.shape or lgb_probability.shape != y_true.shape:
+        raise ValueError(
+            f"fold {prepared['name']} ensemble prediction shape mismatch: "
+            f"truth={y_true.shape} catboost={cat_probability.shape} "
+            f"lightgbm={lgb_probability.shape}"
+        )
+    return {
+        **prepared,
+        "cat_probability": cat_probability,
+        "lgb_probability": lgb_probability,
+        "catboost_best_iteration": int(cat_result.best_iteration),
+        "lightgbm_best_iteration": int(lgb_result.best_iteration),
+        "catboost_runtime_seconds": float(cat_result.runtime_seconds),
+        "lightgbm_runtime_seconds": float(lgb_result.runtime_seconds),
+        "fold_workers": int(fold_workers),
+    }
+
+
 def run_ensemble_backtest(
     train_frame: pd.DataFrame,
     catboost_params: dict | None = None,
@@ -210,19 +296,32 @@ def run_ensemble_backtest(
     lightgbm_feature_config: FeatureConfig | None = None,
     folds: Sequence[TemporalFold] | None = None,
     weights: Sequence[float] | None = None,
+    cache_dir: str | Path | None = None,
+    parallel_folds: bool = True,
+    total_workers: int | None = None,
 ) -> dict:
-    """Fit both models on shared folds and select a CatBoost/LightGBM OOF blend."""
+    """Fit both models on shared folds and select a CatBoost/LightGBM OOF blend.
+
+    Feature preparation is intentionally sequential because pandas rolling/groupby
+    work is memory-bandwidth heavy. Model fitting may then run folds concurrently
+    under one bounded global CPU budget.
+    """
+    wall_started = perf_counter()
     config = feature_config or FeatureConfig()
     cat_config = catboost_feature_config or config
     lgb_config = lightgbm_feature_config or config
     selected_folds = list(folds or default_folds())
+    if not selected_folds:
+        raise ValueError("folds must not be empty")
     cat_params = dict(catboost_params or {})
     lgb_params = dict(lightgbm_params or {})
+    cache = FeatureCache(cache_dir) if cache_dir is not None else None
+    dataset_fingerprint = frame_fingerprint(train_frame) if cache is not None else None
 
-    pending: list[dict] = []
-    all_y: list[np.ndarray] = []
-    all_cat: list[np.ndarray] = []
-    all_lgb: list[np.ndarray] = []
+    prepared_folds: list[dict] = []
+    total_feature_runtime = 0.0
+    cache_hits = 0
+    cache_lookups = 0
 
     for fold in selected_folds:
         history, validation = split_fold(train_frame, fold)
@@ -231,46 +330,95 @@ def run_ensemble_backtest(
         if validation.empty:
             raise ValueError(f"fold {fold.name} has no validation rows")
 
-        cat_train_features = build_training_features(history, cat_config)
-        cat_valid_features = build_validation_features(history, validation, cat_config)
-        lgb_train_features = build_training_features(history, lgb_config)
-        lgb_valid_features = build_validation_features(history, validation, lgb_config)
-        if cat_valid_features.y is None or lgb_valid_features.y is None:
+        cat_train, cat_valid, cat_hit, cat_feature_runtime = _prepare_feature_pair(
+            history,
+            validation,
+            cat_config,
+            fold,
+            dataset_fingerprint,
+            cache,
+        )
+        total_feature_runtime += cat_feature_runtime
+        if cache is not None:
+            cache_lookups += 1
+            cache_hits += int(cat_hit)
+
+        if cat_config == lgb_config:
+            lgb_train, lgb_valid = cat_train, cat_valid
+            lgb_hit = cat_hit
+            lgb_feature_runtime = 0.0
+        else:
+            lgb_train, lgb_valid, lgb_hit, lgb_feature_runtime = _prepare_feature_pair(
+                history,
+                validation,
+                lgb_config,
+                fold,
+                dataset_fingerprint,
+                cache,
+            )
+            total_feature_runtime += lgb_feature_runtime
+            if cache is not None:
+                cache_lookups += 1
+                cache_hits += int(lgb_hit)
+
+        if cat_valid.y is None or lgb_valid.y is None:
             raise ValueError(f"fold {fold.name} validation target is missing")
-        y_true = np.asarray(cat_valid_features.y, dtype=int)
-        lgb_y = np.asarray(lgb_valid_features.y, dtype=int)
+        y_true = np.asarray(cat_valid.y, dtype=int)
+        lgb_y = np.asarray(lgb_valid.y, dtype=int)
         if not np.array_equal(y_true, lgb_y):
             raise ValueError(f"fold {fold.name} ensemble target alignment mismatch")
 
-        cat_result = fit_catboost(cat_train_features, cat_valid_features, cat_params)
-        lgb_result = fit_lightgbm(lgb_train_features, lgb_valid_features, lgb_params)
-        cat_probability = np.asarray(cat_result.probabilities, dtype=float)
-        lgb_probability = np.asarray(lgb_result.probabilities, dtype=float)
-        if cat_probability.shape != y_true.shape or lgb_probability.shape != y_true.shape:
-            raise ValueError(
-                f"fold {fold.name} ensemble prediction shape mismatch: "
-                f"truth={y_true.shape} catboost={cat_probability.shape} "
-                f"lightgbm={lgb_probability.shape}"
-            )
-
-        pending.append(
+        prepared_folds.append(
             {
                 "name": fold.name,
-                "training_rows": int(len(cat_train_features.y)),
+                "training_rows": int(len(cat_train.y)),
                 "validation_rows": int(len(y_true)),
                 "y_true": y_true,
-                "cat_probability": cat_probability,
-                "lgb_probability": lgb_probability,
-                "catboost_best_iteration": int(cat_result.best_iteration),
-                "lightgbm_best_iteration": int(lgb_result.best_iteration),
-                "catboost_runtime_seconds": float(cat_result.runtime_seconds),
-                "lightgbm_runtime_seconds": float(lgb_result.runtime_seconds),
+                "cat_train_features": cat_train,
+                "cat_valid_features": cat_valid,
+                "lgb_train_features": lgb_train,
+                "lgb_valid_features": lgb_valid,
+                "feature_runtime_seconds": float(cat_feature_runtime + lgb_feature_runtime),
+                "feature_cache_hit": bool(cat_hit and lgb_hit),
             }
         )
-        all_y.append(y_true)
-        all_cat.append(cat_probability)
-        all_lgb.append(lgb_probability)
 
+    worker_budget = int(total_workers or resolve_workers("batch"))
+    if worker_budget < 1:
+        raise ValueError("total_workers must be positive")
+    worker_plan = plan_fold_workers(worker_budget, len(prepared_folds))
+
+    model_started = perf_counter()
+    fitted: list[dict | None] = [None] * len(prepared_folds)
+    max_parallel = min(len(prepared_folds), worker_budget) if parallel_folds else 1
+    if max_parallel > 1:
+        with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+            futures = {
+                executor.submit(
+                    _fit_ensemble_fold,
+                    prepared,
+                    cat_params,
+                    lgb_params,
+                    worker_plan[index],
+                ): index
+                for index, prepared in enumerate(prepared_folds)
+            }
+            for future in as_completed(futures):
+                fitted[futures[future]] = future.result()
+    else:
+        for index, prepared in enumerate(prepared_folds):
+            fitted[index] = _fit_ensemble_fold(
+                prepared,
+                cat_params,
+                lgb_params,
+                worker_plan[index],
+            )
+    model_wall_seconds = perf_counter() - model_started
+    pending = [item for item in fitted if item is not None]
+
+    all_y = [item["y_true"] for item in pending]
+    all_cat = [item["cat_probability"] for item in pending]
+    all_lgb = [item["lgb_probability"] for item in pending]
     concatenated_y = np.concatenate(all_y)
     concatenated_cat = np.concatenate(all_cat)
     concatenated_lgb = np.concatenate(all_lgb)
@@ -299,36 +447,35 @@ def run_ensemble_backtest(
 
     fold_records: list[dict] = []
     total_runtime = 0.0
+    total_cat_runtime = 0.0
+    total_lgb_runtime = 0.0
     for item in pending:
-        cat_prediction = (
-            item["cat_probability"] >= cat_summary["threshold"]
-        ).astype(int)
-        lgb_prediction = (
-            item["lgb_probability"] >= lgb_summary["threshold"]
-        ).astype(int)
-        fold_probability = (
-            weight_cat * item["cat_probability"] + weight_lgb * item["lgb_probability"]
-        )
-        ensemble_prediction = (
-            fold_probability >= ensemble_summary["threshold"]
-        ).astype(int)
+        cat_prediction = (item["cat_probability"] >= cat_summary["threshold"]).astype(int)
+        lgb_prediction = (item["lgb_probability"] >= lgb_summary["threshold"]).astype(int)
+        fold_probability = weight_cat * item["cat_probability"] + weight_lgb * item["lgb_probability"]
+        ensemble_prediction = (fold_probability >= ensemble_summary["threshold"]).astype(int)
         rows = int(item["validation_rows"])
         cat_points = float(dmc_points(item["y_true"], cat_prediction))
         lgb_points = float(dmc_points(item["y_true"], lgb_prediction))
         ensemble_points = float(dmc_points(item["y_true"], ensemble_prediction))
-        runtime = float(
-            item["catboost_runtime_seconds"] + item["lightgbm_runtime_seconds"]
-        )
+        cat_runtime = float(item["catboost_runtime_seconds"])
+        lgb_runtime = float(item["lightgbm_runtime_seconds"])
+        runtime = cat_runtime + lgb_runtime
         total_runtime += runtime
+        total_cat_runtime += cat_runtime
+        total_lgb_runtime += lgb_runtime
         fold_records.append(
             {
                 "name": item["name"],
                 "training_rows": item["training_rows"],
                 "validation_rows": rows,
+                "fold_workers": item["fold_workers"],
+                "feature_runtime_seconds": item["feature_runtime_seconds"],
+                "feature_cache_hit": item["feature_cache_hit"],
                 "catboost_best_iteration": item["catboost_best_iteration"],
                 "lightgbm_best_iteration": item["lightgbm_best_iteration"],
-                "catboost_runtime_seconds": item["catboost_runtime_seconds"],
-                "lightgbm_runtime_seconds": item["lightgbm_runtime_seconds"],
+                "catboost_runtime_seconds": cat_runtime,
+                "lightgbm_runtime_seconds": lgb_runtime,
                 "catboost_points": cat_points,
                 "lightgbm_points": lgb_points,
                 "ensemble_points": ensemble_points,
@@ -355,4 +502,13 @@ def run_ensemble_backtest(
         "ensemble": ensemble_summary,
         "estimated_50078_points": float(ensemble_summary["estimated_50078_points"]),
         "runtime_seconds": float(total_runtime),
+        "catboost_runtime_seconds": float(total_cat_runtime),
+        "lightgbm_runtime_seconds": float(total_lgb_runtime),
+        "feature_runtime_seconds": float(total_feature_runtime),
+        "model_wall_seconds": float(model_wall_seconds),
+        "wall_runtime_seconds": float(perf_counter() - wall_started),
+        "feature_cache_hits": int(cache_hits),
+        "feature_cache_lookups": int(cache_lookups),
+        "parallel_folds": bool(parallel_folds),
+        "total_workers": int(worker_budget),
     }
