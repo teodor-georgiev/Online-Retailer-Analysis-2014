@@ -185,6 +185,46 @@ def test_ensemble_backtest_path_never_loads_final_labels(tmp_path, monkeypatch):
     assert result == {"rows": 4, "model": "ensemble"}
 
 
+def test_ensemble_params_can_override_feature_config_per_model(tmp_path, monkeypatch):
+    archive = tmp_path / "dmc.zip"
+    make_archive(archive)
+    captured = {}
+
+    def fake_ensemble(frame, **kwargs):
+        captured.update(kwargs)
+        return {"rows": len(frame), "model": "ensemble"}
+
+    monkeypatch.setattr(cli, "run_ensemble_backtest", fake_ensemble)
+    settings = {
+        "catboost": {},
+        "lightgbm": {},
+        "catboost_feature_config": {
+            "history_groups": [],
+            "recency_groups": [["customerID"]],
+            "user_profiles": False,
+            "product_profiles": False,
+        },
+        "lightgbm_feature_config": {
+            "history_groups": [],
+            "recency_groups": [["customerID"]],
+            "user_profiles": True,
+            "product_profiles": True,
+        },
+    }
+    result = cli.backtest_from_zip(
+        archive,
+        "ensemble",
+        settings,
+        cli.FeatureConfig(user_profiles=True, product_profiles=True),
+    )
+
+    assert result == {"rows": 4, "model": "ensemble"}
+    assert captured["catboost_feature_config"].user_profiles is False
+    assert captured["catboost_feature_config"].product_profiles is False
+    assert captured["lightgbm_feature_config"].user_profiles is True
+    assert captured["lightgbm_feature_config"].product_profiles is True
+
+
 def test_parse_json_handles_long_inline_payload_without_path_probe():
     payload = {
         "catboost": {
