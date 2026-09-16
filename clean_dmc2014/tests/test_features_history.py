@@ -87,3 +87,43 @@ def test_validation_target_history_uses_only_prior_labeled_history():
     assert np.allclose(first.X["hist_customerID_return_rate"], [2 / 3])
     assert first.y.tolist() == [1]
     assert second.y.tolist() == [0]
+
+
+def test_profile_flags_keep_training_and_validation_columns_aligned():
+    frame = frame_with_history()
+    history = frame.iloc[:3].copy()
+    valid = frame.iloc[3:].copy()
+    config = FeatureConfig(
+        history_groups=(),
+        recency_groups=(("customerID",),),
+        user_profiles=True,
+        product_profiles=True,
+    )
+
+    train_features = build_training_features(history, config)
+    valid_features = build_validation_features(history, valid, config)
+
+    assert train_features.X.columns.tolist() == valid_features.X.columns.tolist()
+    assert "user_prior_cumulative_spend" in train_features.X.columns
+    assert "item_prior_unique_customers" in train_features.X.columns
+    assert "manufacturer_prior_unique_items" in train_features.X.columns
+
+
+def test_validation_profile_features_ignore_validation_labels():
+    frame = frame_with_history()
+    history = frame.iloc[:2].copy()
+    valid = frame.iloc[2:].copy().reset_index(drop=True)
+    config = FeatureConfig(
+        history_groups=(),
+        recency_groups=(),
+        user_profiles=True,
+        product_profiles=True,
+    )
+
+    first = build_validation_features(history, valid, config)
+    mutated = valid.copy()
+    mutated["returnShipment"] = 1 - mutated["returnShipment"]
+    second = build_validation_features(history, mutated, config)
+
+    pd.testing.assert_frame_equal(first.X, second.X)
+    assert first.y.tolist() != second.y.tolist()
