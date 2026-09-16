@@ -6,11 +6,14 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 from typing import Iterable
 
 
 GIB = 1024 ** 3
-BATCH_MIN_CPU_FRACTION = 0.25
+BATCH_SOFT_LOAD_PER_CPU = 1.5
+BATCH_HARD_LOAD_PER_CPU = 2.0
+BATCH_EMERGENCY_LOAD_PER_CPU = 3.0
 DEFAULT_SHARED_CLI_CANDIDATES = (
     Path("/srv/projects/chatgpt-compute-chatgpt-edit/admin/vps_capacity.py"),
     Path("/srv/sentinelx-agents/lane-1/chatgpt-compute/admin/vps_capacity.py"),
@@ -65,32 +68,89 @@ def _local_load_average() -> float:
         return 0.0
 
 
+def _read_cpu_times(path: Path = Path("/proc/stat")) -> tuple[int, int] | None:
+    try:
+        line = path.read_text(encoding="utf-8").splitlines()[0]
+    except (OSError, IndexError):
+        return None
+    fields = line.split()
+    if not fields or fields[0] != "cpu":
+        return None
+    try:
+        values = [int(value) for value in fields[1:]]
+    except ValueError:
+        return None
+    if len(values) < 4:
+        return None
+    total = sum(values)
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    return total, idle
+
+
+def _local_cpu_busy_fraction(interval_seconds: float = 0.08) -> float:
+    first = _read_cpu_times()
+    if first is None:
+        cpus = _local_cpu_count()
+        return min(1.0, _local_load_average() / cpus)
+    time.sleep(max(0.0, interval_seconds))
+    second = _read_cpu_times()
+    if second is None:
+        cpus = _local_cpu_count()
+        return min(1.0, _local_load_average() / cpus)
+    total_delta = second[0] - first[0]
+    idle_delta = second[1] - first[1]
+    if total_delta <= 0 or idle_delta < 0:
+        cpus = _local_cpu_count()
+        return min(1.0, _local_load_average() / cpus)
+    return max(0.0, min(1.0, 1.0 - idle_delta / total_delta))
+
+
+def _batch_cpu_budget(cpus: int, load: float, busy: float) -> int:
+    busy_cpus = max(0.0, min(1.0, busy)) * cpus
+    utilization_gap = max(0, math.ceil(cpus - busy_cpus - 1e-9))
+    soft = cpus * BATCH_SOFT_LOAD_PER_CPU
+    hard = cpus * BATCH_HARD_LOAD_PER_CPU
+    emergency = cpus * BATCH_EMERGENCY_LOAD_PER_CPU
+
+    if load >= emergency:
+        return 1
+    if load >= hard:
+        progress = (load - hard) / max(1e-9, emergency - hard)
+        load_cap = max(1, math.ceil(cpus * 0.25 * (1.0 - progress)))
+    elif load >= soft:
+        progress = (load - soft) / max(1e-9, hard - soft)
+        load_cap = max(1, math.ceil(cpus * (1.0 - 0.75 * progress)))
+    else:
+        load_cap = cpus
+    return max(1, min(utilization_gap, load_cap))
+
+
 def _local_fallback(profile: str) -> int:
     cpus = _local_cpu_count()
     if profile == "light":
         reserve = max(2, math.ceil(cpus * 0.25))
         max_workers = 2
-        min_cpu_floor = 1
         memory_headroom = 3 * GIB
     elif profile == "default":
         reserve = max(2, math.ceil(cpus * 0.25))
         max_workers = cpus
-        min_cpu_floor = 1
         memory_headroom = 4 * GIB
     elif profile == "batch":
-        reserve = max(1, math.ceil(cpus * 0.125))
+        reserve = 0
         max_workers = cpus
-        min_cpu_floor = max(1, math.ceil(cpus * BATCH_MIN_CPU_FRACTION))
         memory_headroom = 3 * GIB
     else:
         raise ValueError(f"unknown capacity profile: {profile}")
 
-    load = min(float(cpus), _local_load_average())
-    pressure_budget = math.floor(cpus - reserve - load)
-    cpu_budget = max(min_cpu_floor, pressure_budget)
     available_memory = _local_memory_available_bytes()
     if available_memory is not None and available_memory < memory_headroom:
         return 1
+
+    load = _local_load_average()
+    if profile == "batch":
+        cpu_budget = _batch_cpu_budget(cpus, load, _local_cpu_busy_fraction())
+    else:
+        cpu_budget = max(1, math.floor(cpus - reserve - min(float(cpus), load)))
     return max(1, min(cpus, max_workers, cpu_budget))
 
 
