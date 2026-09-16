@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 
+import dmc2014.legacy_audit as legacy_audit
 from dmc2014.legacy_audit import prepare_legacy_audit_data, score_predictions
 
 
@@ -35,6 +36,12 @@ def test_prepare_legacy_audit_data_seals_competition_labels():
     assert "return" not in data.competition_x
     assert data.train_y.tolist() == [0, 1]
     assert data.train_x.columns.tolist() == data.competition_x.columns.tolist()
+
+
+def test_legacy_catboost_settings_use_dynamic_workers(monkeypatch):
+    monkeypatch.setattr(legacy_audit, "resolve_workers", lambda profile: 13)
+    assert legacy_audit.legacy_catboost_settings()["thread_count"] == 13
+    assert legacy_audit.legacy_catboost_settings({"thread_count": 3})["thread_count"] == 3
 
 
 def test_score_predictions_is_exact_mistake_count():
