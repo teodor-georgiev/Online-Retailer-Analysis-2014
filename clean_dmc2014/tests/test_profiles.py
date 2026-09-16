@@ -64,6 +64,19 @@ def test_user_profile_contains_causal_spend_diversity_and_familiarity():
     assert later["user_days_since_previous_purchase"] == 2.0
 
 
+def test_user_profile_adds_velocity_novelty_repeat_and_price_deviation():
+    profiles = build_training_profiles(_frame(), user_profiles=True, product_profiles=False)
+    later = profiles.loc[2]
+
+    assert later["user_prior_repeat_item_count"] == 0.0
+    assert later["user_prior_repeat_item_share"] == 0.0
+    assert later["user_order_velocity_30d"] == 15.0
+    assert later["user_item_is_new"] == 0.0
+    assert later["user_manufacturer_is_new"] == 0.0
+    assert later["user_price_minus_prior_mean"] == -3.0
+    assert np.isclose(later["user_price_over_prior_mean"], 0.8)
+
+
 def test_product_profiles_capture_prior_customer_and_price_history():
     profiles = build_training_profiles(_frame(), user_profiles=False, product_profiles=True)
     later = profiles.loc[2]
@@ -95,6 +108,20 @@ def test_product_profiles_measure_true_prior_repeat_purchases():
     assert profiles.loc[3, "item_prior_unique_customers"] == 1.0
     assert profiles.loc[3, "item_prior_repeat_purchase_count"] == 1.0
     assert profiles.loc[3, "item_prior_repeat_purchase_share"] == 0.5
+
+
+def test_product_profiles_add_velocity_price_deviation_and_novelty():
+    profiles = build_training_profiles(_frame(), user_profiles=False, product_profiles=True)
+    later = profiles.loc[2]
+
+    assert later["item_is_new"] == 0.0
+    assert later["manufacturer_is_new"] == 0.0
+    assert later["item_sales_velocity_30d"] == 15.0
+    assert later["manufacturer_sales_velocity_30d"] == 30.0
+    assert later["item_price_minus_prior_mean"] == 2.0
+    assert np.isclose(later["item_price_over_prior_mean"], 1.2)
+    assert later["manufacturer_price_minus_prior_mean"] == -3.0
+    assert np.isclose(later["manufacturer_price_over_prior_mean"], 0.8)
 
 
 def test_validation_profiles_use_history_and_earlier_validation_predictors_only():
