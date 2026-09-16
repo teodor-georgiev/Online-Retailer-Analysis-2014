@@ -132,6 +132,9 @@ def final_evaluate_from_zip(zip_path: str | Path, config: dict) -> dict:
 def _parse_json(value: str | None) -> dict:
     if not value:
         return {}
+    rendered = value.strip()
+    if rendered.startswith("{") or rendered.startswith("["):
+        return json.loads(rendered)
     path = Path(value)
     if path.exists():
         return json.loads(path.read_text())
