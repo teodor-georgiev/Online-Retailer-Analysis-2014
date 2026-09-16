@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from dmc2014.capacity import resolve_workers
 from dmc2014.features import FeatureSet
 
 
@@ -41,7 +42,7 @@ def _catboost_defaults() -> dict:
         "random_seed": 42,
         "l2_leaf_reg": 8.0,
         "random_strength": 0.5,
-        "thread_count": 2,
+        "thread_count": resolve_workers("batch"),
         "allow_writing_files": False,
         "verbose": False,
     }
@@ -75,7 +76,7 @@ def _lightgbm_defaults() -> dict:
         "colsample_bytree": 0.9,
         "reg_lambda": 3.0,
         "random_state": 42,
-        "n_jobs": 2,
+        "n_jobs": resolve_workers("batch"),
         "verbosity": -1,
         "deterministic": True,
         "force_col_wise": True,
