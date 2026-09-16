@@ -8,6 +8,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from dmc2014.capacity import resolve_workers
+
 
 DROP_COLUMNS = [
     "order_date",
@@ -87,13 +89,7 @@ def prepare_legacy_audit_data(frame: pd.DataFrame) -> LegacyAuditData:
     return LegacyAuditData(train_x, train_y, competition_x, categorical)
 
 
-def fit_frozen_legacy_catboost(
-    data: LegacyAuditData,
-    params: dict | None = None,
-) -> LegacyAuditModelResult:
-    """Fit without eval_set or early stopping; April labels cannot affect training."""
-    from catboost import CatBoostClassifier
-
+def legacy_catboost_settings(params: dict | None = None) -> dict:
     settings = {
         "iterations": 200,
         "learning_rate": 0.11,
@@ -102,11 +98,22 @@ def fit_frozen_legacy_catboost(
         "random_seed": 42,
         "l2_leaf_reg": 15,
         "max_ctr_complexity": 3,
-        "thread_count": 8,
+        "thread_count": resolve_workers("batch"),
         "allow_writing_files": False,
         "verbose": False,
     }
     settings.update(params or {})
+    return settings
+
+
+def fit_frozen_legacy_catboost(
+    data: LegacyAuditData,
+    params: dict | None = None,
+) -> LegacyAuditModelResult:
+    """Fit without eval_set or early stopping; April labels cannot affect training."""
+    from catboost import CatBoostClassifier
+
+    settings = legacy_catboost_settings(params)
     started = perf_counter()
     model = CatBoostClassifier(**settings)
     model.fit(data.train_x, data.train_y, cat_features=data.categorical, verbose=False)
