@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from dmc2014_benchmark import prepare_training_features_loo
+from dmc2014_fast_history import prepare_training_features_loo
 
 
 def test_prepare_training_features_loo_excludes_each_rows_own_target():
