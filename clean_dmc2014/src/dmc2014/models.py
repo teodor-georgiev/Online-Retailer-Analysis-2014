@@ -159,8 +159,7 @@ def fit_lightgbm(
     model.fit(
         train_x,
         np.asarray(train.y, dtype=int),
-        eval_X=valid_x,
-        eval_y=np.asarray(valid.y, dtype=int),
+        eval_set=[(valid_x, np.asarray(valid.y, dtype=int))],
         callbacks=callbacks,
         categorical_feature=train.categorical,
     )
