@@ -9,6 +9,7 @@ import sys
 from typing import Iterable
 
 
+GIB = 1024 ** 3
 DEFAULT_SHARED_CLI_CANDIDATES = (
     Path("/srv/projects/chatgpt-compute-chatgpt-edit/admin/vps_capacity.py"),
     Path("/srv/sentinelx-agents/lane-1/chatgpt-compute/admin/vps_capacity.py"),
@@ -35,17 +36,57 @@ def _local_cpu_count() -> int:
     return max(1, int(os.cpu_count() or 1))
 
 
+def _local_memory_available_bytes(path: Path = Path("/proc/meminfo")) -> int | None:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        key, sep, remainder = line.partition(":")
+        if key != "MemAvailable" or not sep:
+            continue
+        fields = remainder.strip().split()
+        if not fields:
+            return None
+        try:
+            value = int(fields[0])
+        except ValueError:
+            return None
+        multiplier = 1024 if len(fields) > 1 and fields[1] == "kB" else 1
+        return max(0, value * multiplier)
+    return None
+
+
+def _local_load_average() -> float:
+    try:
+        return max(0.0, float(os.getloadavg()[0]))
+    except (AttributeError, OSError):
+        return 0.0
+
+
 def _local_fallback(profile: str) -> int:
     cpus = _local_cpu_count()
     if profile == "light":
-        return min(2, cpus)
-    if profile == "default":
         reserve = max(2, math.ceil(cpus * 0.25))
-        return max(1, cpus - reserve)
-    if profile == "batch":
+        max_workers = 2
+        memory_headroom = 3 * GIB
+    elif profile == "default":
+        reserve = max(2, math.ceil(cpus * 0.25))
+        max_workers = cpus
+        memory_headroom = 4 * GIB
+    elif profile == "batch":
         reserve = max(1, math.ceil(cpus * 0.125))
-        return max(1, cpus - reserve)
-    raise ValueError(f"unknown capacity profile: {profile}")
+        max_workers = cpus
+        memory_headroom = 3 * GIB
+    else:
+        raise ValueError(f"unknown capacity profile: {profile}")
+
+    load = min(float(cpus), _local_load_average())
+    cpu_budget = max(1, math.floor(cpus - reserve - load))
+    available_memory = _local_memory_available_bytes()
+    if available_memory is not None and available_memory < memory_headroom:
+        return 1
+    return max(1, min(cpus, max_workers, cpu_budget))
 
 
 def _workers_from_cli(path: Path, profile: str) -> int | None:
