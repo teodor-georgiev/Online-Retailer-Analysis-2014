@@ -35,7 +35,7 @@ def test_select_blend_finds_unique_best_mixed_weight():
 
     assert result["weight_catboost"] == 0.60
     assert result["points"] == 0.0
-    assert np.isclose(result["threshold"], 0.46)
+    assert np.isclose(result["threshold"], 0.4575)
 
 
 def test_select_blend_tie_breaks_toward_half_then_lower_catboost_weight():
