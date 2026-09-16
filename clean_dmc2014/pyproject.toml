@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dmc2014-clean-room"
+version = "0.1.0"
+description = "Leakage-safe Data Mining Cup 2014 return-shipment benchmark"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.0",
+  "pandas>=2.2",
+  "scikit-learn>=1.5",
+  "catboost>=1.2.7",
+  "lightgbm>=4.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3"]
+
+[project.scripts]
+dmc2014 = "dmc2014.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dmc2014"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
