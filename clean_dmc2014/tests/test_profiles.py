@@ -82,6 +82,21 @@ def test_product_profiles_capture_prior_customer_and_price_history():
     assert later["manufacturer_prior_cumulative_revenue"] == 30.0
 
 
+def test_product_profiles_measure_true_prior_repeat_purchases():
+    profiles = build_training_profiles(_frame(), user_profiles=False, product_profiles=True)
+
+    # At 2012-01-03, item 10 has one prior sale by one customer: no repeat yet.
+    assert profiles.loc[2, "item_prior_repeat_purchase_count"] == 0.0
+    assert profiles.loc[2, "item_prior_repeat_purchase_share"] == 0.0
+
+    # At 2012-01-05, item 10 has two prior sales but only one unique buyer,
+    # so one prior sale is a repeat purchase.
+    assert profiles.loc[3, "item_prior_sales_count"] == 2.0
+    assert profiles.loc[3, "item_prior_unique_customers"] == 1.0
+    assert profiles.loc[3, "item_prior_repeat_purchase_count"] == 1.0
+    assert profiles.loc[3, "item_prior_repeat_purchase_share"] == 0.5
+
+
 def test_validation_profiles_use_history_and_earlier_validation_predictors_only():
     history = _frame().iloc[:2].copy()
     validation = _frame().iloc[2:].copy().reset_index(drop=True)
