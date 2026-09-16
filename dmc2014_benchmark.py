@@ -298,6 +298,111 @@ def fit_candidate(
     return model, probability, best_iteration
 
 
+def lightgbm_configs() -> list[dict]:
+    """Return a deterministic LightGBM sweep sized for the CPU VPS."""
+    common = {
+        "objective": "binary",
+        "random_state": 42,
+        "n_jobs": -1,
+        "verbosity": -1,
+        "deterministic": True,
+        "force_col_wise": True,
+    }
+    return [
+        {
+            "name": "lightgbm_l31_lr005",
+            "params": {
+                **common,
+                "n_estimators": 800,
+                "learning_rate": 0.05,
+                "num_leaves": 31,
+                "min_child_samples": 100,
+                "subsample": 0.9,
+                "colsample_bytree": 0.9,
+                "reg_lambda": 2.0,
+                "cat_smooth": 20.0,
+            },
+        },
+        {
+            "name": "lightgbm_l63_lr0035",
+            "params": {
+                **common,
+                "n_estimators": 1200,
+                "learning_rate": 0.035,
+                "num_leaves": 63,
+                "min_child_samples": 80,
+                "subsample": 0.9,
+                "colsample_bytree": 0.9,
+                "reg_lambda": 3.0,
+                "cat_smooth": 25.0,
+            },
+        },
+        {
+            "name": "lightgbm_l127_lr003",
+            "params": {
+                **common,
+                "n_estimators": 1400,
+                "learning_rate": 0.03,
+                "num_leaves": 127,
+                "max_depth": 8,
+                "min_child_samples": 120,
+                "subsample": 0.9,
+                "colsample_bytree": 0.85,
+                "reg_lambda": 4.0,
+                "cat_smooth": 30.0,
+            },
+        },
+    ]
+
+
+def _align_lightgbm_categories(
+    train_x: pd.DataFrame,
+    valid_x: pd.DataFrame,
+    categorical_columns: Sequence[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    train = train_x.copy()
+    valid = valid_x.copy()
+    for column in categorical_columns:
+        if column not in train.columns or column not in valid.columns:
+            raise KeyError(f"categorical column missing: {column}")
+        train_values = train[column].astype("string").fillna("__MISSING__").astype(str)
+        valid_values = valid[column].astype("string").fillna("__MISSING__").astype(str)
+        levels = pd.Index(train_values.unique()).union(pd.Index(valid_values.unique()))
+        dtype = pd.CategoricalDtype(categories=levels)
+        train[column] = train_values.astype(dtype)
+        valid[column] = valid_values.astype(dtype)
+    return train, valid
+
+
+def fit_lightgbm_candidate(
+    train_x: pd.DataFrame,
+    train_y: Sequence[int],
+    valid_x: pd.DataFrame,
+    valid_y: Sequence[int],
+    categorical_columns: Sequence[str],
+    params: dict,
+):
+    """Fit one LightGBM candidate with aligned pandas categorical columns."""
+    from lightgbm import LGBMClassifier, early_stopping, log_evaluation
+
+    if list(train_x.columns) != list(valid_x.columns):
+        raise ValueError("train_x and valid_x must have identical columns in identical order")
+    train_aligned, valid_aligned = _align_lightgbm_categories(train_x, valid_x, categorical_columns)
+
+    model = LGBMClassifier(**params)
+    model.fit(
+        train_aligned,
+        np.asarray(train_y, dtype=int),
+        eval_set=[(valid_aligned, np.asarray(valid_y, dtype=int))],
+        eval_metric="binary_logloss",
+        categorical_feature=list(categorical_columns),
+        callbacks=[early_stopping(80, verbose=False), log_evaluation(0)],
+    )
+    probability = model.predict_proba(valid_aligned, num_iteration=model.best_iteration_)[:, 1].astype(float)
+    best_iteration = int(model.best_iteration_ or params.get("n_estimators", 1))
+    return model, probability, best_iteration
+
+
 def choose_best_result(results: Sequence[dict]) -> dict:
     """Return the candidate with the lowest validation DMC point total."""
     if not results:
