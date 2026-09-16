@@ -47,6 +47,23 @@ def _catboost_defaults() -> dict:
     }
 
 
+def _catboost_settings_and_controls(params: dict | None) -> tuple[dict, int | None]:
+    options = dict(params or {})
+    marker = object()
+    requested = options.pop("_early_stopping_rounds", marker)
+    settings = _catboost_defaults()
+    settings.update(options)
+    if requested is marker:
+        early_stopping = min(80, max(10, int(settings["iterations"]) // 5))
+    elif requested is None:
+        early_stopping = None
+    else:
+        early_stopping = int(requested)
+        if early_stopping < 1:
+            raise ValueError("_early_stopping_rounds must be positive or null")
+    return settings, early_stopping
+
+
 def _lightgbm_defaults() -> dict:
     return {
         "objective": "binary",
@@ -73,23 +90,32 @@ def fit_catboost(
     from catboost import CatBoostClassifier
 
     _validate_feature_sets(train, valid)
-    settings = _catboost_defaults()
-    settings.update(params or {})
+    settings, early_stopping = _catboost_settings_and_controls(params)
 
     started = perf_counter()
     model = CatBoostClassifier(**settings)
-    model.fit(
-        train.X,
-        np.asarray(train.y, dtype=int),
-        cat_features=train.categorical,
-        eval_set=(valid.X, np.asarray(valid.y, dtype=int)),
-        use_best_model=True,
-        early_stopping_rounds=min(80, max(10, int(settings["iterations"]) // 5)),
-        verbose=False,
-    )
+    if early_stopping is None:
+        model.fit(
+            train.X,
+            np.asarray(train.y, dtype=int),
+            cat_features=train.categorical,
+            verbose=False,
+        )
+        best_iteration = int(settings["iterations"])
+    else:
+        model.fit(
+            train.X,
+            np.asarray(train.y, dtype=int),
+            cat_features=train.categorical,
+            eval_set=(valid.X, np.asarray(valid.y, dtype=int)),
+            use_best_model=True,
+            early_stopping_rounds=early_stopping,
+            verbose=False,
+        )
+        zero_based = int(model.get_best_iteration())
+        best_iteration = zero_based + 1 if zero_based >= 0 else int(model.tree_count_)
+
     probabilities = model.predict_proba(valid.X)[:, 1].astype(float)
-    zero_based = int(model.get_best_iteration())
-    best_iteration = zero_based + 1 if zero_based >= 0 else int(model.tree_count_)
     return ModelResult(
         probabilities=probabilities,
         model=model,
@@ -164,8 +190,7 @@ def fit_final_probabilities(
     if model_name == "catboost":
         from catboost import CatBoostClassifier
 
-        settings = _catboost_defaults()
-        settings.update(params or {})
+        settings, _early_stopping = _catboost_settings_and_controls(params)
         settings["iterations"] = int(iterations)
         model = CatBoostClassifier(**settings)
         model.fit(
