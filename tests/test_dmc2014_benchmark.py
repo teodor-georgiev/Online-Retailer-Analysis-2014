@@ -8,6 +8,8 @@ from dmc2014_benchmark import (
     dmc_score,
     load_competition_data,
     load_realclass,
+    prepare_prediction_features,
+    prepare_training_features,
     split_train_validation,
 )
 
@@ -97,3 +99,51 @@ def test_realclass_loader_is_separate(tmp_path):
     real.write_text("orderItemID;returnShipment\n2;1\n", encoding="utf-8")
     result = load_realclass(tmp_path)
     assert result.to_dict("records") == [{"orderItemID": 2, "returnShipment": 1}]
+
+
+def test_training_history_expands_month_by_month_without_future_labels():
+    frame = pd.DataFrame(
+        {
+            "orderItemID": [1, 2, 3],
+            "orderDate": ["2012-04-10", "2012-05-10", "2012-06-10"],
+            "customerID": [9, 9, 9],
+            "returnShipment": [1, 0, 0],
+        }
+    )
+    features, target, categorical = prepare_training_features(
+        frame,
+        group_specs=[("customerID",)],
+        smoothing=0.0,
+    )
+    assert target.tolist() == [1, 0, 0]
+    assert features["hist_customerID_count"].tolist() == [0, 1, 2]
+    assert np.allclose(features["hist_customerID_return_rate"], [0.5, 1.0, 0.5])
+    assert "customerID" in categorical
+
+
+def test_prediction_features_use_all_supplied_history_but_no_target_label():
+    history = pd.DataFrame(
+        {
+            "orderItemID": [1, 2],
+            "orderDate": ["2012-04-10", "2012-05-10"],
+            "customerID": [9, 9],
+            "returnShipment": [1, 0],
+        }
+    )
+    target = pd.DataFrame(
+        {
+            "orderItemID": [3],
+            "orderDate": ["2012-06-10"],
+            "customerID": [9],
+        }
+    )
+    features, categorical = prepare_prediction_features(
+        history,
+        target,
+        group_specs=[("customerID",)],
+        smoothing=0.0,
+    )
+    assert features.loc[0, "hist_customerID_count"] == 2
+    assert features.loc[0, "hist_customerID_return_rate"] == 0.5
+    assert "returnShipment" not in features.columns
+    assert "customerID" in categorical
