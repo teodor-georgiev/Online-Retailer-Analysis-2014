@@ -30,6 +30,7 @@ def _feature_config_from_record(record: dict | None) -> FeatureConfig:
         smoothing=float(record.get("smoothing", 20.0)),
         user_profiles=bool(record.get("user_profiles", False)),
         product_profiles=bool(record.get("product_profiles", False)),
+        rolling_profiles=bool(record.get("rolling_profiles", False)),
     )
 
 
@@ -181,6 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument("--no-recency", action="store_true")
     backtest.add_argument("--user-profiles", action="store_true")
     backtest.add_argument("--product-profiles", action="store_true")
+    backtest.add_argument("--rolling-profiles", action="store_true")
     backtest.add_argument("--output", default=None)
 
     final = subparsers.add_parser("final-evaluate")
@@ -200,6 +202,7 @@ def main() -> None:
             smoothing=args.smoothing,
             user_profiles=bool(args.user_profiles),
             product_profiles=bool(args.product_profiles),
+            rolling_profiles=bool(args.rolling_profiles),
         )
         result = backtest_from_zip(
             args.zip_path,
