@@ -50,9 +50,12 @@ def _parse_dates(frame: pd.DataFrame) -> pd.DataFrame:
 
 def _validate_binary(values: pd.Series, name: str) -> pd.Series:
     numeric = pd.to_numeric(values, errors="raise")
-    unique = set(numeric.dropna().astype(int).unique().tolist())
-    if not unique.issubset({0, 1}):
-        raise ValueError(f"{name} must be binary 0/1; got {sorted(unique)}")
+    if numeric.isna().any():
+        raise ValueError(f"{name} must be binary 0/1 and contain no missing values")
+    invalid = ~numeric.isin([0, 1])
+    if invalid.any():
+        bad_values = sorted(numeric.loc[invalid].unique().tolist())
+        raise ValueError(f"{name} must be binary 0/1; got {bad_values}")
     return numeric.astype("int8")
 
 
