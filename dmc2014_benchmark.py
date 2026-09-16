@@ -103,8 +103,9 @@ def build_row_features(frame: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         order_key = [frame["customerID"], order_date]
         output["basket_item_count"] = frame.groupby(order_key, dropna=False)["orderItemID"].transform("size").astype(float)
         if "price" in frame.columns:
-            output["basket_total_price"] = pd.to_numeric(frame["price"], errors="coerce").groupby(order_key, dropna=False).transform("sum")
-            output["basket_mean_price"] = pd.to_numeric(frame["price"], errors="coerce").groupby(order_key, dropna=False).transform("mean")
+            price = pd.to_numeric(frame["price"], errors="coerce")
+            output["basket_total_price"] = price.groupby(order_key, dropna=False).transform("sum")
+            output["basket_mean_price"] = price.groupby(order_key, dropna=False).transform("mean")
         if "itemID" in frame.columns:
             output["basket_unique_items"] = frame.groupby(order_key, dropna=False)["itemID"].transform("nunique").astype(float)
 
@@ -212,6 +213,65 @@ def prepare_prediction_features(
     """Build features for a future window using only supplied labeled history."""
     enriched = add_history_features(history, target, group_specs, smoothing=smoothing)
     return build_row_features(enriched)
+
+
+def candidate_configs() -> list[dict]:
+    """Return a small deterministic CatBoost sweep for temporal validation."""
+    common = {
+        "loss_function": "Logloss",
+        "eval_metric": "Logloss",
+        "random_seed": 42,
+        "allow_writing_files": False,
+        "verbose": False,
+        "thread_count": -1,
+    }
+    return [
+        {
+            "name": "catboost_d6_lr007",
+            "params": {**common, "iterations": 800, "depth": 6, "learning_rate": 0.07, "l2_leaf_reg": 5.0},
+        },
+        {
+            "name": "catboost_d7_lr005",
+            "params": {**common, "iterations": 1100, "depth": 7, "learning_rate": 0.05, "l2_leaf_reg": 6.0},
+        },
+        {
+            "name": "catboost_d8_lr0035",
+            "params": {**common, "iterations": 1400, "depth": 8, "learning_rate": 0.035, "l2_leaf_reg": 8.0},
+        },
+    ]
+
+
+def fit_candidate(
+    train_x: pd.DataFrame,
+    train_y: Sequence[int],
+    valid_x: pd.DataFrame,
+    valid_y: Sequence[int],
+    categorical_columns: Sequence[str],
+    params: dict,
+):
+    """Fit one CatBoost candidate and return validation probabilities."""
+    from catboost import CatBoostClassifier
+
+    missing = sorted(set(categorical_columns) - set(train_x.columns))
+    if missing:
+        raise KeyError(f"categorical columns missing from train_x: {missing}")
+    if list(train_x.columns) != list(valid_x.columns):
+        raise ValueError("train_x and valid_x must have identical columns in identical order")
+
+    model = CatBoostClassifier(**params)
+    model.fit(
+        train_x,
+        np.asarray(train_y, dtype=int),
+        cat_features=list(categorical_columns),
+        eval_set=(valid_x, np.asarray(valid_y, dtype=int)),
+        use_best_model=True,
+        early_stopping_rounds=80,
+        verbose=False,
+    )
+    probability = model.predict_proba(valid_x)[:, 1].astype(float)
+    zero_based_best = int(model.get_best_iteration())
+    best_iteration = zero_based_best + 1 if zero_based_best >= 0 else int(model.tree_count_)
+    return model, probability, best_iteration
 
 
 def choose_best_result(results: Sequence[dict]) -> dict:
