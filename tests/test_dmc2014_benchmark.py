@@ -25,7 +25,7 @@ def test_dmc_score_is_sum_absolute_error():
 
 def test_best_threshold_minimizes_hard_dmc_points():
     y = np.array([0, 0, 1, 1])
-    p = np.array([0.10, 0.45, 0.46, 0.90])
+    p = np.array([0.10, 0.44, 0.46, 0.90])
     threshold, points = best_threshold(y, p, thresholds=[0.4, 0.45, 0.5])
     assert threshold == 0.45
     assert points == 0.0
