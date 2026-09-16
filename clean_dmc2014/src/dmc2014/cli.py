@@ -42,11 +42,25 @@ def backtest_from_zip(
     train, _competition = load_train_and_class(zip_path)
     settings = dict(params or {})
     if model_name == "ensemble":
+        cat_feature_record = settings.get("catboost_feature_config")
+        lgb_feature_record = settings.get("lightgbm_feature_config")
+        cat_feature_config = (
+            _feature_config_from_record(cat_feature_record)
+            if cat_feature_record is not None
+            else None
+        )
+        lgb_feature_config = (
+            _feature_config_from_record(lgb_feature_record)
+            if lgb_feature_record is not None
+            else None
+        )
         return run_ensemble_backtest(
             train,
             catboost_params=dict(settings.get("catboost", {})),
             lightgbm_params=dict(settings.get("lightgbm", {})),
             feature_config=feature_config,
+            catboost_feature_config=cat_feature_config,
+            lightgbm_feature_config=lgb_feature_config,
         )
     return run_backtest(
         train,
