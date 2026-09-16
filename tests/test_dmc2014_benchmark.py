@@ -4,8 +4,10 @@ import pandas as pd
 from dmc2014_benchmark import (
     add_history_features,
     build_row_features,
+    candidate_configs,
     choose_best_result,
     dmc_score,
+    fit_candidate,
     load_competition_data,
     load_realclass,
     prepare_prediction_features,
@@ -147,3 +149,42 @@ def test_prediction_features_use_all_supplied_history_but_no_target_label():
     assert features.loc[0, "hist_customerID_return_rate"] == 0.5
     assert "returnShipment" not in features.columns
     assert "customerID" in categorical
+
+
+def test_candidate_configs_are_named_and_unique():
+    configs = candidate_configs()
+    assert len(configs) >= 2
+    assert len({config["name"] for config in configs}) == len(configs)
+    assert all(config["params"]["random_seed"] == 42 for config in configs)
+
+
+def test_fit_candidate_returns_probabilities_and_best_iteration():
+    train_x = pd.DataFrame(
+        {
+            "customerID": ["a", "a", "b", "b", "c", "c", "d", "d"],
+            "price": [10, 11, 20, 21, 30, 31, 40, 41],
+        }
+    )
+    train_y = np.array([0, 0, 1, 1, 0, 1, 0, 1])
+    valid_x = pd.DataFrame({"customerID": ["a", "b", "c", "d"], "price": [12, 22, 32, 42]})
+    valid_y = np.array([0, 1, 1, 1])
+    model, probability, best_iteration = fit_candidate(
+        train_x,
+        train_y,
+        valid_x,
+        valid_y,
+        ["customerID"],
+        {
+            "iterations": 20,
+            "depth": 3,
+            "learning_rate": 0.1,
+            "loss_function": "Logloss",
+            "random_seed": 42,
+            "allow_writing_files": False,
+            "verbose": False,
+        },
+    )
+    assert model is not None
+    assert probability.shape == (4,)
+    assert np.all((probability >= 0) & (probability <= 1))
+    assert best_iteration >= 1
