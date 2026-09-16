@@ -8,7 +8,7 @@ from statistics import median
 import numpy as np
 
 from dmc2014.data import load_final_labels, load_train_and_class
-from dmc2014.experiment import run_backtest
+from dmc2014.experiment import run_backtest, run_ensemble_backtest
 from dmc2014.features import (
     DEFAULT_HISTORY_GROUPS,
     DEFAULT_RECENCY_GROUPS,
@@ -28,6 +28,8 @@ def _feature_config_from_record(record: dict | None) -> FeatureConfig:
         history_groups=tuple(tuple(group) for group in history),
         recency_groups=tuple(tuple(group) for group in recency),
         smoothing=float(record.get("smoothing", 20.0)),
+        user_profiles=bool(record.get("user_profiles", False)),
+        product_profiles=bool(record.get("product_profiles", False)),
     )
 
 
@@ -38,10 +40,18 @@ def backtest_from_zip(
     feature_config: FeatureConfig,
 ) -> dict:
     train, _competition = load_train_and_class(zip_path)
+    settings = dict(params or {})
+    if model_name == "ensemble":
+        return run_ensemble_backtest(
+            train,
+            catboost_params=dict(settings.get("catboost", {})),
+            lightgbm_params=dict(settings.get("lightgbm", {})),
+            feature_config=feature_config,
+        )
     return run_backtest(
         train,
         model_name=model_name,
-        params=params or {},
+        params=settings,
         feature_config=feature_config,
     )
 
@@ -73,6 +83,8 @@ def final_evaluate_from_zip(zip_path: str | Path, config: dict) -> dict:
         )
 
     model_name = str(config["model"])
+    if model_name == "ensemble":
+        raise ValueError("final ensemble evaluation is not enabled during model selection")
     params = dict(config.get("params", {}))
     feature_config = _feature_config_from_record(config.get("feature_config"))
     threshold = float(config.get("threshold", 0.5))
@@ -141,11 +153,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     backtest = subparsers.add_parser("backtest")
     backtest.add_argument("--zip", required=True, dest="zip_path")
-    backtest.add_argument("--model", choices=["catboost", "lightgbm"], default="catboost")
+    backtest.add_argument(
+        "--model",
+        choices=["catboost", "lightgbm", "ensemble"],
+        default="catboost",
+    )
     backtest.add_argument("--params-json", default=None)
     backtest.add_argument("--smoothing", type=float, default=20.0)
     backtest.add_argument("--no-history", action="store_true")
     backtest.add_argument("--no-recency", action="store_true")
+    backtest.add_argument("--user-profiles", action="store_true")
+    backtest.add_argument("--product-profiles", action="store_true")
     backtest.add_argument("--output", default=None)
 
     final = subparsers.add_parser("final-evaluate")
@@ -163,6 +181,8 @@ def main() -> None:
             history_groups=() if args.no_history else DEFAULT_HISTORY_GROUPS,
             recency_groups=() if args.no_recency else DEFAULT_RECENCY_GROUPS,
             smoothing=args.smoothing,
+            user_profiles=bool(args.user_profiles),
+            product_profiles=bool(args.product_profiles),
         )
         result = backtest_from_zip(
             args.zip_path,
