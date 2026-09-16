@@ -127,3 +127,59 @@ def test_final_evaluation_rejects_label_alignment_mismatch(tmp_path, monkeypatch
     }
     with pytest.raises(ValueError, match="alignment"):
         cli.final_evaluate_from_zip(archive, config)
+
+
+def test_parser_accepts_ensemble_and_profile_flags():
+    args = cli.build_parser().parse_args(
+        [
+            "backtest",
+            "--zip",
+            "dmc.zip",
+            "--model",
+            "ensemble",
+            "--user-profiles",
+            "--product-profiles",
+        ]
+    )
+    assert args.model == "ensemble"
+    assert args.user_profiles is True
+    assert args.product_profiles is True
+
+
+def test_feature_config_record_round_trips_profile_flags():
+    config = cli._feature_config_from_record(
+        {
+            "history_groups": [],
+            "recency_groups": [["customerID"]],
+            "smoothing": 12.0,
+            "user_profiles": True,
+            "product_profiles": True,
+        }
+    )
+    assert config.user_profiles is True
+    assert config.product_profiles is True
+    assert config.history_groups == ()
+    assert config.recency_groups == (("customerID",),)
+    assert config.smoothing == 12.0
+
+
+def test_ensemble_backtest_path_never_loads_final_labels(tmp_path, monkeypatch):
+    archive = tmp_path / "dmc.zip"
+    make_archive(archive)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("ensemble backtest must not load final labels")
+
+    monkeypatch.setattr(cli, "load_final_labels", forbidden)
+    monkeypatch.setattr(
+        cli,
+        "run_ensemble_backtest",
+        lambda frame, **kwargs: {"rows": len(frame), "model": "ensemble"},
+    )
+    result = cli.backtest_from_zip(
+        archive,
+        "ensemble",
+        {"catboost": {}, "lightgbm": {}},
+        cli.FeatureConfig(user_profiles=True, product_profiles=True),
+    )
+    assert result == {"rows": 4, "model": "ensemble"}
