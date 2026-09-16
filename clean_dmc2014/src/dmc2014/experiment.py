@@ -206,11 +206,15 @@ def run_ensemble_backtest(
     catboost_params: dict | None = None,
     lightgbm_params: dict | None = None,
     feature_config: FeatureConfig | None = None,
+    catboost_feature_config: FeatureConfig | None = None,
+    lightgbm_feature_config: FeatureConfig | None = None,
     folds: Sequence[TemporalFold] | None = None,
     weights: Sequence[float] | None = None,
 ) -> dict:
     """Fit both models on shared folds and select a CatBoost/LightGBM OOF blend."""
     config = feature_config or FeatureConfig()
+    cat_config = catboost_feature_config or config
+    lgb_config = lightgbm_feature_config or config
     selected_folds = list(folds or default_folds())
     cat_params = dict(catboost_params or {})
     lgb_params = dict(lightgbm_params or {})
@@ -227,14 +231,19 @@ def run_ensemble_backtest(
         if validation.empty:
             raise ValueError(f"fold {fold.name} has no validation rows")
 
-        train_features = build_training_features(history, config)
-        valid_features = build_validation_features(history, validation, config)
-        if valid_features.y is None:
+        cat_train_features = build_training_features(history, cat_config)
+        cat_valid_features = build_validation_features(history, validation, cat_config)
+        lgb_train_features = build_training_features(history, lgb_config)
+        lgb_valid_features = build_validation_features(history, validation, lgb_config)
+        if cat_valid_features.y is None or lgb_valid_features.y is None:
             raise ValueError(f"fold {fold.name} validation target is missing")
-        y_true = np.asarray(valid_features.y, dtype=int)
+        y_true = np.asarray(cat_valid_features.y, dtype=int)
+        lgb_y = np.asarray(lgb_valid_features.y, dtype=int)
+        if not np.array_equal(y_true, lgb_y):
+            raise ValueError(f"fold {fold.name} ensemble target alignment mismatch")
 
-        cat_result = fit_catboost(train_features, valid_features, cat_params)
-        lgb_result = fit_lightgbm(train_features, valid_features, lgb_params)
+        cat_result = fit_catboost(cat_train_features, cat_valid_features, cat_params)
+        lgb_result = fit_lightgbm(lgb_train_features, lgb_valid_features, lgb_params)
         cat_probability = np.asarray(cat_result.probabilities, dtype=float)
         lgb_probability = np.asarray(lgb_result.probabilities, dtype=float)
         if cat_probability.shape != y_true.shape or lgb_probability.shape != y_true.shape:
@@ -247,7 +256,7 @@ def run_ensemble_backtest(
         pending.append(
             {
                 "name": fold.name,
-                "training_rows": int(len(train_features.y)),
+                "training_rows": int(len(cat_train_features.y)),
                 "validation_rows": int(len(y_true)),
                 "y_true": y_true,
                 "cat_probability": cat_probability,
@@ -334,6 +343,8 @@ def run_ensemble_backtest(
             "lightgbm": lgb_params,
         },
         "feature_config": _config_record(config),
+        "feature_config_catboost": _config_record(cat_config),
+        "feature_config_lightgbm": _config_record(lgb_config),
         "weight_catboost": weight_cat,
         "weight_lightgbm": weight_lgb,
         "threshold": float(ensemble_summary["threshold"]),
