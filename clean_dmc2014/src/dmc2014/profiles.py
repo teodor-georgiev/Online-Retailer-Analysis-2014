@@ -209,6 +209,7 @@ def _build_user_profiles(source: pd.DataFrame) -> pd.DataFrame:
     output = pd.DataFrame(index=np.arange(len(source)))
     daily, mapped = _entity_mapped(source, ("customerID",))
     current_date = source["orderDate"].reset_index(drop=True)
+    current_price = source["price"].reset_index(drop=True)
     previous_date = pd.to_datetime(mapped["previous_date"], errors="coerce")
     first_prior_date = pd.to_datetime(mapped["first_prior_date"], errors="coerce")
 
@@ -265,12 +266,30 @@ def _build_user_profiles(source: pd.DataFrame) -> pd.DataFrame:
     output["user_manufacturer_familiarity"] = _safe_ratio(
         output["user_prior_manufacturer_count"], output["user_prior_row_count"]
     )
+    output["user_prior_repeat_item_count"] = (
+        output["user_prior_row_count"] - output["user_prior_unique_items"]
+    ).clip(lower=0.0)
+    output["user_prior_repeat_item_share"] = _safe_ratio(
+        output["user_prior_repeat_item_count"], output["user_prior_row_count"]
+    )
+    output["user_order_velocity_30d"] = _safe_ratio(
+        30.0 * output["user_prior_order_count"], output["user_lifetime_days"]
+    )
+    output["user_item_is_new"] = (output["user_prior_item_count"] <= 0).astype(float)
+    output["user_manufacturer_is_new"] = (
+        output["user_prior_manufacturer_count"] <= 0
+    ).astype(float)
+    output["user_price_minus_prior_mean"] = current_price - output["user_prior_price_mean"]
+    output["user_price_over_prior_mean"] = _safe_ratio(
+        current_price, output["user_prior_price_mean"]
+    )
     return output
 
 
 def _build_product_profiles(source: pd.DataFrame) -> pd.DataFrame:
     output = pd.DataFrame(index=np.arange(len(source)))
     current_date = source["orderDate"].reset_index(drop=True)
+    current_price = source["price"].reset_index(drop=True)
 
     item_daily, item = _entity_mapped(source, ("itemID",))
     item_previous = pd.to_datetime(item["previous_date"], errors="coerce")
@@ -329,6 +348,27 @@ def _build_product_profiles(source: pd.DataFrame) -> pd.DataFrame:
     output["manufacturer_days_since_first_sale"] = (
         current_date - manufacturer_first
     ).dt.total_seconds() / 86400.0
+    output["item_is_new"] = (output["item_prior_sales_count"] <= 0).astype(float)
+    output["manufacturer_is_new"] = (
+        output["manufacturer_prior_sales_count"] <= 0
+    ).astype(float)
+    output["item_sales_velocity_30d"] = _safe_ratio(
+        30.0 * output["item_prior_sales_count"], output["item_days_since_first_sale"]
+    )
+    output["manufacturer_sales_velocity_30d"] = _safe_ratio(
+        30.0 * output["manufacturer_prior_sales_count"],
+        output["manufacturer_days_since_first_sale"],
+    )
+    output["item_price_minus_prior_mean"] = current_price - output["item_prior_price_mean"]
+    output["item_price_over_prior_mean"] = _safe_ratio(
+        current_price, output["item_prior_price_mean"]
+    )
+    output["manufacturer_price_minus_prior_mean"] = (
+        current_price - output["manufacturer_prior_price_mean"]
+    )
+    output["manufacturer_price_over_prior_mean"] = _safe_ratio(
+        current_price, output["manufacturer_prior_price_mean"]
+    )
     return output
 
 
